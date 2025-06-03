@@ -73,14 +73,14 @@ class SyncService:
             self._scan_directory(replica_path, files_data)
 
         # Then scan all the specialized subdirectories
-        for subdir in ["epubs", "original_mobi", "original_epubs", "kfx"]:
+        for subdir in ["epubs", "original_mobi", "original_epubs", "kfx", "azw3"]:
             subdir_path = os.path.join(replica_path, subdir)
             if os.path.exists(subdir_path):
                 self._scan_directory(subdir_path, files_data)
 
         return files_data
 
-    def get_destination_path(self, replica_path: str, original_file: Dict, dry_run: bool = False) -> str:
+    def get_destination_path(self, replica_path: str, original_file: Dict, dry_run: bool = False) -> str | None:
         """
         Determine the destination path in the replica based on file extension and rename the file
         using the proper title and author from Calibre metadata.
@@ -135,7 +135,9 @@ class SyncService:
             "epub": "epubs",
             "original_epub": "original_epubs",
             "original_mobi": "original_mobi",
-            "kfx": "kfx"
+            "kfx": "kfx",
+            "azw3": "azw3",
+            "original_azw3": "azw3"
         }
 
         if ext in ext_dir_map:
@@ -144,9 +146,13 @@ class SyncService:
             if not dry_run:
                 os.makedirs(subdir, exist_ok=True)
             return os.path.join(subdir, filename)
-        else:
+        elif ext == "mobi":
             # All other files go directly to the replica root
             return os.path.join(replica_path, filename)
+        else:
+            # For unsupported extensions, just return the original path
+            logger.warning(f"Unsupported file extension '{ext}' for file '{filename}', ignoring.")
+            return None
 
     def _scan_directory(self, directory: str, files_data: Dict[str, Dict]) -> None:
         """Helper method to scan a directory and add files to files_data dict"""
@@ -241,6 +247,7 @@ class SyncService:
             "updated": 0,
             "deleted": 0,
             "unchanged": 0,
+            "ignored": 0,  # For files that are skipped (e.g., .db, .json)
             "errors": 0
         }
 
@@ -248,6 +255,13 @@ class SyncService:
         processed_dest_files = set()
 
         for filename, source_meta in source_files.items():
+            # Skip .db and .json files
+            file_ext = os.path.splitext(filename)[1].lower()
+            if file_ext in ['.db', '.json']:
+                stats["ignored"] += 1
+                logger.debug(f"Ignoring database/config file: {filename}")
+                continue
+
             # Add Calibre metadata for renaming - use absolute path for reliable matching
             source_path = os.path.abspath(source_meta["path"])
 
@@ -270,6 +284,7 @@ class SyncService:
                     logger.warning(f"No metadata match found for '{filename}' - will copy with original name")
 
             dest_path = self.get_destination_path(destination, source_meta, dry_run)
+            if not dest_path: continue
             dest_filename = os.path.basename(dest_path)
 
             # Log the transformation
