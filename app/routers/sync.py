@@ -1,7 +1,7 @@
 import datetime
 import logging
 from typing import Dict, Any
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, BackgroundTasks
 from pydantic import BaseModel
 
 from ..services.sync_service import sync_folders, get_sync_service
@@ -48,7 +48,8 @@ def perform_sync(dry_run: bool = False):
 
 
 @router.post("/trigger", response_model=SyncResponse)
-def trigger_sync(
+async def trigger_sync(
+        background_tasks: BackgroundTasks,
         dry_run: bool = Query(False, description="Run in dry-run mode without making changes")
 ):
     if sync_status["in_progress"]:
@@ -57,14 +58,12 @@ def trigger_sync(
             last_sync=sync_status["last_sync"]
         )
 
-    perform_sync(dry_run=dry_run)
+    background_tasks.add_task(perform_sync, dry_run=dry_run)
 
     return SyncResponse(
         status="started",
-        last_sync=sync_status["last_sync"],
-        details=sync_status["result"]
+        last_sync=sync_status["last_sync"]
     )
-
 
 @router.get("/status", response_model=SyncResponse)
 async def get_sync_status():
