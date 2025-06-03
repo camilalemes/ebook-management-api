@@ -94,23 +94,32 @@ class SyncService:
 
         # Create a properly formatted filename if we have Calibre metadata
         if calibre_title:
-            # Handle special cases where the author field contains part of the title
+            # Handle cases where the author field contains part of the title
             author_str = ""
-            if calibre_authors and isinstance(calibre_authors, list):
-                author_string = calibre_authors[0] if calibre_authors else "Unknown"
+            if calibre_authors and isinstance(calibre_authors, list) and calibre_authors[0]:
+                author_string = calibre_authors[0]
 
-                # Special case: "Box" with title in authors field
-                if calibre_title == "Box" and " - " in author_string:
-                    # Extract the real title and author
-                    title_parts = author_string.split(" - ")
-                    if len(title_parts) >= 2:
-                        calibre_title = f"Box - {title_parts[0].strip()}"
-                        author_str = title_parts[1].strip()
-                        logger.info(f"Special case: Split box title from authors: '{calibre_title}' by '{author_str}'")
+                # Check if author string contains title components (separated by " - ")
+                if " - " in author_string:
+                    # Extract the real title and author using a simpler approach
+                    parts = author_string.split(" - ")
+
+                    if len(parts) >= 2:
+                        # Use the last part as the author
+                        author_str = parts[-1].strip()
+
+                        # Use everything before the last part as additional title components
+                        title_components = " - ".join(parts[:-1]).strip()
+                        calibre_title = f"{calibre_title} - {title_components}"
+
+                        logger.info(
+                            f"Extracted compound title: '{calibre_title}' from author field, real author: '{author_str}'")
+                    else:
+                        author_str = author_string
                 else:
                     author_str = author_string
             else:
-                author_str = str(calibre_authors) if calibre_authors else "Unknown"
+                author_str = str(calibre_authors[0]) if calibre_authors else "Unknown"
 
             # Create a sanitized filename: "Title - Author.ext"
             # Remove characters that are problematic in filenames
@@ -119,7 +128,7 @@ class SyncService:
 
             # Create the new filename
             filename = f"{safe_title} - {safe_author}.{ext}"
-            logger.info(f"Created filename: '{filename}'")
+            logger.debug(f"Created filename: '{filename}'")
 
         # Map extensions to directories
         ext_dir_map = {
@@ -211,7 +220,7 @@ class SyncService:
                             "authors": authors,
                             "book_id": book_id
                         }
-                        logger.info(
+                        logger.debug(
                             f"Found metadata for '{os.path.basename(fmt)}': '{title}' by {authors[0] if authors else 'Unknown'}")
         except Exception as e:
             logger.warning(f"Could not retrieve Calibre metadata: {e}")
@@ -245,7 +254,7 @@ class SyncService:
             # Try to find metadata for this file
             if source_path in calibre_books_by_path:
                 source_meta.update(calibre_books_by_path[source_path])
-                logger.info(f"Applied metadata: '{calibre_books_by_path[source_path]['title']}' to '{filename}'")
+                logger.debug(f"Applied metadata: '{calibre_books_by_path[source_path]['title']}' to '{filename}'")
             else:
                 logger.warning(f"No metadata found for '{filename}' at '{source_path}'")
                 # Try to find a partial match (in case paths are different but filenames match)
@@ -265,7 +274,7 @@ class SyncService:
 
             # Log the transformation
             if filename != dest_filename:
-                logger.info(f"Renaming: '{filename}' → '{dest_filename}'")
+                logger.debug(f"Renaming: '{filename}' → '{dest_filename}'")
 
             # Keep track of processed files
             processed_dest_files.add(dest_filename)

@@ -2,11 +2,12 @@
 import os
 import shutil
 import tempfile
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 from .sync import perform_sync
 from ..services.calibre_service import get_calibre_service, CalibreService
@@ -23,6 +24,22 @@ class Book(BaseModel):
     size: Optional[int] = None
     last_modified: Optional[float] = None
     path: Optional[str] = None
+
+    @computed_field
+    def formatted_size(self) -> Optional[str]:
+        """Return size formatted in KB"""
+        if self.size is not None:
+            kb_size = self.size / 1024
+            return f"{kb_size:.0f} KB"
+        return None
+
+    @computed_field
+    def formatted_date(self) -> Optional[str]:
+        """Return date formatted as dd/MM/yyyy HH:mm"""
+        if self.last_modified is not None:
+            dt = datetime.fromtimestamp(self.last_modified)
+            return dt.strftime("%d/%m/%Y %H:%M") + "h"
+        return None
 
 
 class BookCollection(BaseModel):
