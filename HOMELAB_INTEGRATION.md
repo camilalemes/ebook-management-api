@@ -30,9 +30,15 @@ Add these to your main `.env` file or create `/home/misty/dev/lemoes-home/.env.e
 # Ebook Management Configuration
 PC_IP=192.168.50.245  # Your PC's IP
 NAS_IP=192.168.50.216  # Your NAS IP
+
+# PC SMB credentials (Windows)
 SMB_USER=guest
 SMB_PASS=
-NAS_SHARE_PATH=/volume1/ebook-replicas
+
+# NAS SMB credentials
+NAS_SHARE_NAME=ebook-replicas
+NAS_SMB_USER=admin
+NAS_SMB_PASS=your_nas_password
 ```
 
 ## 🌐 Network Integration
@@ -64,10 +70,11 @@ The service will integrate with your existing infrastructure:
 
 ## 🗄️ NAS Setup
 
-Create an NFS share on your NAS for ebook replicas:
+Create an SMB share on your NAS for ebook replicas:
+- **Share Name**: `ebook-replicas` 
 - **Path**: `/volume1/ebook-replicas` (or adjust to your setup)
-- **Access**: Read/Write for your server IP
-- **Protocol**: NFS v4 (recommended)
+- **Access**: Read/Write for your user account
+- **Protocol**: SMB/CIFS
 
 ## 🚀 Deployment
 
@@ -145,8 +152,8 @@ ping 192.168.50.216  # NAS
 # Test SMB access
 smbclient -L //192.168.50.245 -U guest
 
-# Test NFS access  
-showmount -e 192.168.50.216
+# Test NAS SMB access
+smbclient -L //192.168.50.216 -U admin
 ```
 
 ### View mount status:
