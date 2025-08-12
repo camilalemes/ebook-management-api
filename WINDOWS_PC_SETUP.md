@@ -120,7 +120,7 @@ Update your server's `.env` file with your Windows PC details:
 
 ```env
 # Your Windows PC configuration
-PC_IP=192.168.50.100        # Your PC's IP address
+PC_IP=192.168.50.245        # Your PC's IP address
 SMB_USER=guest              # Use 'guest' for simple setup
 SMB_PASS=                   # Empty for guest access
 

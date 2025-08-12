@@ -32,12 +32,12 @@ echo -e "${BLUE}📋 Network Configuration...${NC}"
 echo
 
 # PC Configuration
-PC_IP=$(prompt_with_default "Your PC's IP address" "192.168.1.100")
+PC_IP=$(prompt_with_default "Your PC's IP address" "192.168.50.245")
 SMB_USER=$(prompt_with_default "SMB username (leave empty for guest)" "")
 SMB_PASS=$(prompt_with_default "SMB password (leave empty for guest)" "")
 
 # NAS Configuration  
-NAS_IP=$(prompt_with_default "Your NAS IP address" "192.168.1.200")
+NAS_IP=$(prompt_with_default "Your NAS IP address" "192.168.50.216")
 NAS_SHARE_PATH=$(prompt_with_default "NAS share path for replicas" "/volume1/ebook-replicas")
 
 # Domain configuration

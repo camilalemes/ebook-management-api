@@ -28,8 +28,8 @@ Add these to your main `.env` file or create `/home/misty/dev/lemoes-home/.env.e
 
 ```env
 # Ebook Management Configuration
-PC_IP=192.168.50.100  # Your PC's IP
-NAS_IP=192.168.50.200  # Your NAS IP
+PC_IP=192.168.50.245  # Your PC's IP
+NAS_IP=192.168.50.216  # Your NAS IP
 SMB_USER=guest
 SMB_PASS=
 NAS_SHARE_PATH=/volume1/ebook-replicas
@@ -139,14 +139,14 @@ NAS_SHARE_PATH=/path/to/your/ebook/storage
 ### Check network connectivity:
 ```bash
 # From your server
-ping 192.168.50.100  # PC
-ping 192.168.50.200  # NAS
+ping 192.168.50.245  # PC
+ping 192.168.50.216  # NAS
 
 # Test SMB access
-smbclient -L //192.168.50.100 -U guest
+smbclient -L //192.168.50.245 -U guest
 
 # Test NFS access  
-showmount -e 192.168.50.200
+showmount -e 192.168.50.216
 ```
 
 ### View mount status:
