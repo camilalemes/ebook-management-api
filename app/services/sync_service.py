@@ -33,7 +33,7 @@ class SyncService:
         files_data = {}
 
         for root, dirs, files in os.walk(self.source_path):
-            for filename in files:
+            for filename in sorted(files):
                 if filename.startswith('.') or filename in ['metadata.opf', 'cover.jpg']:
                     continue  # Skip metadata files and hidden files
 
@@ -87,6 +87,10 @@ class SyncService:
         """
         filename = os.path.basename(original_file["path"])
         ext = original_file["ext"]
+        
+        # Special case: metadata.db goes directly to replica root without renaming
+        if filename == 'metadata.db':
+            return os.path.join(replica_path, filename)
 
         # Get the book metadata from Calibre to use for renaming
         calibre_title = original_file.get("title", "")
@@ -159,7 +163,7 @@ class SyncService:
         if not os.path.exists(directory):
             return
 
-        for filename in os.listdir(directory):
+        for filename in sorted(os.listdir(directory)):
             filepath = os.path.join(directory, filename)
             if os.path.isfile(filepath) and not filename.startswith('.'):
                 try:
@@ -248,17 +252,30 @@ class SyncService:
             "deleted": 0,
             "unchanged": 0,
             "ignored": 0,  # For files that are skipped (e.g., .db, .json)
-            "errors": 0
+            "errors": 0,
+            # File lists for detailed reporting
+            "added_files": [],
+            "updated_files": [],
+            "deleted_files": [],
+            "ignored_files": [],
+            "error_files": []
         }
 
         # Process source files - copy or update as needed
         processed_dest_files = set()
 
         for filename, source_meta in source_files.items():
-            # Skip .db and .json files
+            # Handle different file types
             file_ext = os.path.splitext(filename)[1].lower()
-            if file_ext in ['.db', '.json']:
+            
+            # Always copy metadata.db as it contains important Calibre library information
+            if filename == 'metadata.db':
+                # Process metadata.db normally - it should be copied to replicas
+                pass
+            # Skip other .db and .json files
+            elif file_ext in ['.db', '.json']:
                 stats["ignored"] += 1
+                stats["ignored_files"].append(filename)
                 logger.debug(f"Ignoring database/config file: {filename}")
                 continue
 
@@ -302,12 +319,15 @@ class SyncService:
                         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
                         shutil.copy2(source_meta["path"], dest_path)
                         stats["added"] += 1
+                        stats["added_files"].append(dest_filename)
                         logger.info(f"Added: {dest_filename}")
                     except Exception as e:
                         stats["errors"] += 1
+                        stats["error_files"].append(dest_filename)
                         logger.error(f"Error copying {dest_filename}: {e}")
                 else:
                     stats["added"] += 1
+                    stats["added_files"].append(dest_filename)
                     logger.info(f"Would add: {dest_filename}")
             else:
                 # File exists, check if it's different
@@ -324,12 +344,15 @@ class SyncService:
                             try:
                                 shutil.copy2(source_meta["path"], dest_path)
                                 stats["updated"] += 1
+                                stats["updated_files"].append(dest_filename)
                                 logger.info(f"Updated: {dest_filename}")
                             except Exception as e:
                                 stats["errors"] += 1
+                                stats["error_files"].append(dest_filename)
                                 logger.error(f"Error updating {dest_filename}: {e}")
                         else:
                             stats["updated"] += 1
+                            stats["updated_files"].append(dest_filename)
                             logger.info(f"Would update: {dest_filename}")
                     else:
                         stats["unchanged"] += 1
@@ -339,16 +362,24 @@ class SyncService:
         # Find files to delete (in dest but not in source)
         for dest_filename, dest_meta in dest_files.items():
             if dest_filename not in processed_dest_files:
+                # Never delete essential Calibre system files
+                if dest_filename in ['metadata.db', 'metadata_db_prefs_backup.json']:
+                    logger.debug(f"Preserving Calibre system file: {dest_filename}")
+                    continue
+                
                 if not dry_run:
                     try:
                         os.remove(dest_meta["path"])
                         stats["deleted"] += 1
+                        stats["deleted_files"].append(dest_filename)
                         logger.info(f"Deleted: {dest_filename}")
                     except Exception as e:
                         stats["errors"] += 1
+                        stats["error_files"].append(dest_filename)
                         logger.error(f"Error deleting {dest_filename}: {e}")
                 else:
                     stats["deleted"] += 1
+                    stats["deleted_files"].append(dest_filename)
                     logger.info(f"Would delete: {dest_filename}")
 
         logger.info(f"Sync completed. Stats: {stats}")

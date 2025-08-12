@@ -123,15 +123,50 @@ async def list_books(
             ext = file_data.get("ext", "unknown").lower()
             path = file_data.get("path", "")
 
-            # Default values
+            # Smart parsing: don't split on " - " if it's likely part of the title
             title = base_filename
             author = "Unknown"
 
-            # Always assume "Title - Author" format when there's a dash
+            # Only split on " - " if it's likely a title-author separator
             if " - " in base_filename:
-                title, author = base_filename.split(" - ", 1)
-                title = title.strip()
-                author = author.strip()
+                parts = base_filename.split(" - ")
+                
+                # Heuristics to determine if the last part is an author:
+                # 1. If there are only 2 parts and the last part looks like an author name
+                # 2. Avoid splitting known title patterns
+                
+                if len(parts) == 2:
+                    potential_title, potential_author = parts[0].strip(), parts[1].strip()
+                    
+                    # Check if the potential author looks like a real author name
+                    author_indicators = [
+                        # Has typical author name patterns
+                        len(potential_author.split()) <= 4,  # Authors usually have 1-4 names
+                        not any(word in potential_author.lower() for word in [
+                            'parte', 'volume', 'vol', 'livro', 'book', 'series', 'série',
+                            'edition', 'edição', 'clássicos', 'biblioteca', 'coleção'
+                        ]),
+                        # Not obviously part of a title
+                        not potential_author.lower().startswith(('primeira', 'segunda', 'terceira', 'vol', 'book', 'part')),
+                        # Contains typical name patterns
+                        any(char.isupper() for char in potential_author)  # Has capital letters (names)
+                    ]
+                    
+                    # Only split if at least 3 out of 4 heuristics suggest it's an author
+                    if sum(author_indicators) >= 3:
+                        title = potential_title
+                        author = potential_author
+                    # Otherwise keep the full filename as title
+                    
+                # For more than 2 parts, be more conservative - keep full title unless very confident
+                elif len(parts) > 2:
+                    last_part = parts[-1].strip()
+                    # Only split if the last part is very clearly an author (short and has capital letters)
+                    if (len(last_part.split()) <= 3 and 
+                        any(char.isupper() for char in last_part) and
+                        not any(word in last_part.lower() for word in ['vol', 'part', 'book', 'série', 'edition'])):
+                        title = " - ".join(parts[:-1]).strip()
+                        author = last_part
 
             # Create a unique key for the book based on title
             # This ensures different formats of the same book are grouped together
@@ -154,6 +189,9 @@ async def list_books(
                     "mtimes": [file_data.get("mtime", 0)]
                 }
 
+        # Get Calibre books to match IDs
+        calibre_books = calibre_service.get_books()
+        
         # Convert grouped data to Book objects
         books = []
         for book_key, book_data in book_groups.items():
@@ -161,18 +199,107 @@ async def list_books(
             mtime = max(book_data["mtimes"]) if book_data["mtimes"] else 0
             path = book_data["paths"][0] if book_data["paths"] else None
 
-            # Generate deterministic ID from title
-            pseudo_id = abs(hash(book_key)) % 1000000000
-
-            books.append(Book(
-                id=pseudo_id,
-                title=book_data["title"],
-                authors=book_data["authors"],
-                formats=book_data["formats"],
-                size=size,
-                last_modified=mtime,
-                path=path
-            ))
+            # Find all matching books in Calibre library (to handle multiple versions)
+            replica_title = book_data["title"].strip().lower()
+            replica_authors = [author.strip().lower() for author in book_data["authors"]]
+            
+            import logging
+            logger = logging.getLogger("book_matching")
+            logger.info(f"Looking for matches for replica book: '{replica_title}' by {replica_authors}")
+            
+            # Normalize titles for better matching (handle punctuation differences)
+            def normalize_for_matching(title):
+                import re
+                # Remove/normalize punctuation that might vary
+                normalized = re.sub(r'[:\-|–—]', ' ', title)  # Replace colons, dashes with spaces
+                normalized = re.sub(r'[^\w\s]', ' ', normalized)  # Remove other punctuation
+                normalized = re.sub(r'\s+', ' ', normalized)  # Normalize whitespace
+                return normalized.strip()
+            
+            # Find all potential matches (not just the best one)
+            matched_calibre_books = []
+            
+            for calibre_book in calibre_books:
+                calibre_title = calibre_book.get("title", "").strip().lower()
+                calibre_authors_raw = calibre_book.get("authors", [])
+                
+                # Normalize calibre authors to list of lowercase strings
+                if isinstance(calibre_authors_raw, str):
+                    calibre_authors = [calibre_authors_raw.strip().lower()]
+                else:
+                    calibre_authors = [str(author).strip().lower() for author in calibre_authors_raw]
+                
+                calibre_normalized = normalize_for_matching(calibre_title)
+                replica_normalized = normalize_for_matching(replica_title)
+                
+                # Calculate match score
+                title_match = (calibre_title == replica_title or 
+                              calibre_normalized == replica_normalized)
+                author_match = False
+                
+                if replica_authors and replica_authors[0] != "unknown" and calibre_authors:
+                    # Check if any replica author matches any calibre author (partial matches allowed)
+                    author_match = any(
+                        any(replica_author in calibre_author or calibre_author in replica_author or 
+                            # Also check for similarity in names (handle accents, etc.)
+                            abs(len(replica_author) - len(calibre_author)) <= 3 and 
+                            sum(c1 == c2 for c1, c2 in zip(replica_author, calibre_author)) >= min(len(replica_author), len(calibre_author)) * 0.8
+                            for calibre_author in calibre_authors)
+                        for replica_author in replica_authors
+                    )
+                
+                # Score the match
+                score = 0
+                if title_match:
+                    score += 10
+                if author_match:
+                    score += 5
+                
+                # Also try partial title matching for cases where formats might differ
+                if not title_match:
+                    # Use normalized titles for word comparison
+                    replica_words = set(replica_normalized.split())
+                    calibre_words = set(calibre_normalized.split())
+                    common_words = replica_words & calibre_words
+                    if len(common_words) >= 2 and len(common_words) / max(len(replica_words), len(calibre_words)) > 0.6:
+                        score += 3
+                
+                # If this is a good match, add it to our list
+                # Require strong match (exact title + author OR very high score)
+                if score >= 15 or (score >= 10 and title_match):  # More stringent matching
+                    matched_calibre_books.append({
+                        "id": calibre_book["id"],
+                        "title": calibre_title,
+                        "score": score
+                    })
+                    logger.debug(f"Found match (score {score}): Calibre book ID {calibre_book['id']} - '{calibre_title}'")
+            
+            # Create replica book entries for each matched Calibre book
+            if matched_calibre_books:
+                logger.info(f"Found {len(matched_calibre_books)} matching versions in Calibre library")
+                for match in matched_calibre_books:
+                    books.append(Book(
+                        id=match["id"],
+                        title=book_data["title"],
+                        authors=book_data["authors"],
+                        formats=book_data["formats"],
+                        size=size,
+                        last_modified=mtime,
+                        path=path
+                    ))
+            else:
+                logger.warning(f"No good match found for '{replica_title}', using fallback ID")
+                # Use fallback pseudo ID if no matches found
+                fallback_id = abs(hash(book_key)) % 1000000000
+                books.append(Book(
+                    id=fallback_id,
+                    title=book_data["title"],
+                    authors=book_data["authors"],
+                    formats=book_data["formats"],
+                    size=size,
+                    last_modified=mtime,
+                    path=path
+                ))
 
         return BookCollection(books=books, total=len(books))
     else:
@@ -255,6 +382,7 @@ async def delete_book(
     background_tasks.add_task(perform_sync)
 
     return {"status": "success", "message": f"Book {book_id} deleted"}
+
 
 
 @router.get("/books/{book_id}/cover")
