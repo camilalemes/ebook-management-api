@@ -86,3 +86,7 @@ htmlcov/
 # Development files
 CLAUDE.md
 COVER_FIX.md
+
+# GitHub
+.github/
+.git/

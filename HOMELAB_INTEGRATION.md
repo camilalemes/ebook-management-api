@@ -24,22 +24,16 @@ include:
 
 ### 3. Add environment variables:
 
-Add these to your main `.env` file or create `/home/misty/dev/lemoes-home/.env.ebook`:
+Add these to your main `.env` file:
 
 ```env
 # Ebook Management Configuration
-PC_IP=192.168.50.245  # Your PC's IP
-NAS_IP=192.168.50.216  # Your NAS IP
-
-# PC SMB credentials (Windows)
-SMB_USER=guest
-SMB_PASS=
-
-# NAS SMB credentials
-NAS_SHARE_NAME=ebook-replicas
-NAS_SMB_USER=admin
-NAS_SMB_PASS=your_nas_password
+PC_IP=192.168.50.245      # Your Windows PC IP
+PC_SMB_USER=guest         # Windows SMB user (or camilablemes@outlook.com)
+PC_SMB_PASS=              # Windows SMB password (or app password)
 ```
+
+**Note**: NAS access uses your existing `${MEDIA_PATH}` host mount, no additional network config needed.
 
 ## 🌐 Network Integration
 
@@ -70,11 +64,10 @@ The service will integrate with your existing infrastructure:
 
 ## 🗄️ NAS Setup
 
-Create an SMB share on your NAS for ebook replicas:
-- **Share Name**: `ebook-replicas` 
-- **Path**: `/volume1/ebook-replicas` (or adjust to your setup)
-- **Access**: Read/Write for your user account
-- **Protocol**: SMB/CIFS
+Create a folder for ebook replicas in your `${MEDIA_PATH}` location:
+- **Folder**: `${MEDIA_PATH}/ebook-replicas`
+- **Access**: Read/Write for your homelab user
+- **Mount**: Direct host mount (like other media services)
 
 ## 🚀 Deployment
 
