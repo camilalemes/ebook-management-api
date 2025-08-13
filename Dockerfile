@@ -35,11 +35,12 @@ COPY . .
 # Create directories for volumes
 RUN mkdir -p /app/data/calibre-library \
              /app/data/replicas \
-             /app/logs
+             /app/logs \
+             /config/logs
 
 # Create non-root user for security
 RUN adduser --disabled-password --gecos '' appuser && \
-    chown -R appuser:appuser /app
+    chown -R appuser:appuser /app /config
 USER appuser
 
 # Expose port
