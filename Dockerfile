@@ -12,23 +12,12 @@ RUN apt-get update && apt-get install -y \
     curl \
     wget \
     gnupg2 \
-    software-properties-common \
-    # Required for Calibre
-    libegl1-mesa \
-    libxkbcommon-x11-0 \
-    libxcb-icccm4 \
-    libxcb-image0 \
-    libxcb-keysyms1 \
-    libxcb-randr0 \
-    libxcb-render-util0 \
-    libxcb-xinerama0 \
-    libxcb-xfixes0 \
+    ca-certificates \
+    # Install Calibre from package manager (simpler)
+    calibre \
     # Clean up
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Calibre
-RUN wget -nv -O- https://download.calibre-ebook.com/linux-installer.sh | sh /dev/stdin install_dir=/opt/calibre bin_dir=/usr/local/bin
 
 # Create app directory
 WORKDIR /app
