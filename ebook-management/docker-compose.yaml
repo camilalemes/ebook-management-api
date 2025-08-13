@@ -1,6 +1,6 @@
 services:
   ebook-api:
-    image: ghcr.io/lemoes-home/ebook-management-api:latest
+    image: ghcr.io/camilalemes/ebook-management-api:latest
     container_name: ebook-management-api
     restart: unless-stopped
     environment:
@@ -8,17 +8,14 @@ services:
       - CALIBRE_LIBRARY_PATH=/pc-shares/calibre-library
       - REPLICA_PATHS=/pc-shares/ebook-replicas,/data/ebook-replicas
       - CALIBRE_CMD_PATH=calibredb
-      
       # API Configuration
       - API_HOST=0.0.0.0
       - API_PORT=8000
       - API_VERSION=1.0.0
       - API_DEBUG=false
-      
       # Logging
       - LOG_LEVEL=INFO
       - LOG_FILE=/config/logs/app.log
-      
       # User/Group IDs (match homelab setup)
       - PUID=${USER_ID}
       - PGID=${GROUP_ID}
@@ -27,10 +24,8 @@ services:
     volumes:
       # Config and logs (following your pattern)
       - ${CONFIG_PATH}/ebook-management-api:/config
-      
       # NAS ebook replicas (direct mount like other services)
       - ${MEDIA_PATH}/ebook-replicas:/data/ebook-replicas
-      
       # PC SMB shares (OneDrive Calibre + fallback replica)
       - type: volume
         source: pc-calibre-library
@@ -39,10 +34,9 @@ services:
       - type: volume
         source: pc-ebook-replicas
         target: /pc-shares/ebook-replicas
-      
     networks:
       - home
-      
+
     # Health check
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -50,25 +44,16 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-      
     # Wait for PC SMB mounts
     depends_on:
       pc-smb-mounts:
         condition: service_healthy
-      
     labels:
       # Traefik integration
       - traefik.enable=true
       - traefik.http.routers.ebook-api.rule=Host("ebook.lemoes-nest.home")
       - traefik.http.services.ebook-api.loadbalancer.server.port=8000
-      
-      # Homepage integration
-      - homepage.group=Media
-      - homepage.name=Ebook Management
-      - homepage.icon=calibre.png
-      - homepage.href=http://ebook.lemoes-nest.home
-      - homepage.description=Ebook library sync and management
-      
+
       # Watchtower integration
       - com.centurylinklabs.watchtower.enable=true
 
@@ -106,12 +91,10 @@ services:
       - PC_SMB_PASS=${PC_SMB_PASS:-}
       - USER_ID=${USER_ID}
       - GROUP_ID=${GROUP_ID}
-      
     volumes:
       # Share PC mounts with main app container
       - pc-calibre-library:/mnt/calibre-library:shared
       - pc-ebook-replicas:/mnt/ebook-replicas:shared
-      
     networks:
       - home
       
