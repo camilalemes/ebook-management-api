@@ -16,6 +16,8 @@ class CalibreService:
     def __init__(self, library_path: str):
         """Initialize with path to Calibre library."""
         self.library_path = library_path
+        self._books_cache = None
+        self._cache_timestamp = None
 
     def _run_calibredb(self, command: List[str], check: bool = True,
                        custom_library_path: Optional[str] = None) -> subprocess.CompletedProcess:
@@ -81,8 +83,81 @@ class CalibreService:
             elif isinstance(book["formats"], str):  # calibredb might return a single string if only one format
                 book["formats"] = [book["formats"]]
             # If it's already a list, assume it's fine. Add more checks if needed.
+            
+            # If formats is empty, try to detect formats from synchronized file structure
+            if not book["formats"] and current_library_path:
+                book["formats"] = self._detect_formats_from_filesystem(book, current_library_path)
 
         return books
+
+    def _detect_formats_from_filesystem(self, book: Dict[str, Any], library_path: str) -> List[str]:
+        """
+        Detect available formats for a book from the synchronized file structure.
+        This is used when the Calibre database has empty formats but files exist in organized directories.
+        """
+        import os
+        
+        # Create expected filename pattern: "Title - Author"
+        title = book.get("title", "Unknown")
+        authors = book.get("authors", ["Unknown"])
+        author = authors[0] if isinstance(authors, list) and authors else "Unknown"
+        
+        # Sanitize the base filename (remove problematic characters for filesystem)
+        import re
+        base_filename = f"{title} - {author}".replace("/", "-").replace("\\", "-").replace(":", "").replace("|", " ")
+        # Collapse multiple spaces into double spaces (to match actual file naming)
+        base_filename = re.sub(r' {3,}', '  ', base_filename)
+        
+        formats = []
+        
+        # Known format directories in synchronized structure
+        format_dirs = {
+            'epubs': 'epub',
+            'pdfs': 'pdf', 
+            'mobi': 'mobi',
+            'azw': 'azw',
+            'azw3': 'azw3',
+            'txt': 'txt',
+            'rtf': 'rtf',
+            'docx': 'docx',
+            'kfx': 'kfx',
+            'original_epubs': 'epub',
+            'original_mobi': 'mobi'
+        }
+        
+        # Check format directories
+        for format_dir, format_ext in format_dirs.items():
+            format_path = os.path.join(library_path, format_dir)
+            if os.path.exists(format_path):
+                for file in os.listdir(format_path):
+                    # Check if file matches this book's pattern
+                    if file.startswith(base_filename):
+                        # Handle different file extensions based on directory
+                        if format_dir == 'original_epubs' and file.lower().endswith('.original_epub'):
+                            if format_ext not in formats:
+                                formats.append(format_ext)
+                        elif format_dir == 'original_mobi' and file.lower().endswith('.original_mobi'):
+                            if format_ext not in formats:
+                                formats.append(format_ext)
+                        elif file.lower().endswith(f'.{format_ext.lower()}'):
+                            if format_ext not in formats:
+                                formats.append(format_ext)
+        
+        # Also check root directory for mobi files (common in replica structure)
+        if os.path.exists(library_path):
+            for file in os.listdir(library_path):
+                file_path = os.path.join(library_path, file)
+                if os.path.isfile(file_path) and file.startswith(base_filename):
+                    # Check for mobi and other formats in root
+                    if file.lower().endswith('.mobi') and 'mobi' not in formats:
+                        formats.append('mobi')
+                    elif file.lower().endswith('.epub') and 'epub' not in formats:
+                        formats.append('epub')
+                    elif file.lower().endswith('.pdf') and 'pdf' not in formats:
+                        formats.append('pdf')
+        
+        logger.debug(f"Detected formats for book '{title}': {formats}")
+        return formats
 
     def get_book_by_id(self, book_id: int) -> Optional[Dict[str, Any]]:
         """Get detailed information about a specific book."""
@@ -157,25 +232,184 @@ class CalibreService:
             return []
 
     def get_cover_path(self, book_id: int) -> Optional[str]:
-        """Get the path to a book's cover image by searching the library directory."""
+        """Get the path to a book's cover image - check cache first, then extract if needed."""
         try:
-            # Simply search the library directory for folders containing the book ID
-            # Calibre stores books in folders named like "Author/Title (ID)/"
-            for root, dirs, files in os.walk(self.library_path):
-                # Check if this directory contains the book ID in its name
-                if f"({book_id})" in os.path.basename(root):
-                    # Look for cover files in this directory
-                    for cover_name in ["cover.jpg", "cover.jpeg", "cover.png"]:
-                        cover_path = os.path.join(root, cover_name)
-                        if os.path.exists(cover_path):
-                            logger.debug(f"Found cover for book {book_id} at: {cover_path}")
-                            return cover_path
+            # Check if cover is already cached - this should be INSTANT
+            covers_dir = os.path.join(self.library_path, '.covers')
+            cached_cover_path = os.path.join(covers_dir, f"cover_{book_id}.jpg")
             
-            logger.info(f"No cover found for book ID {book_id}")
+            if os.path.exists(cached_cover_path):
+                logger.debug(f"Returning cached cover for book ID {book_id}")
+                return cached_cover_path
+            
+            # If not cached, extract it (this is the slow path, only happens once per book)
+            logger.debug(f"Cover not cached for book ID {book_id}, extracting...")
+            
+            # Get book information to find the actual files
+            import time
+            current_time = time.time()
+            
+            if (self._books_cache is None or 
+                self._cache_timestamp is None or 
+                current_time - self._cache_timestamp > 30):
+                self._books_cache = self.get_books()
+                self._cache_timestamp = current_time
+            
+            books_data = self._books_cache
+            book = None
+            
+            for b in books_data:
+                if b["id"] == book_id:
+                    book = b
+                    break
+            
+            if not book:
+                logger.info(f"Book with ID {book_id} not found")
+                return None
+            
+            # Create expected filename pattern for synchronized structure
+            title = book.get("title", "Unknown")
+            authors = book.get("authors", ["Unknown"])
+            author = authors[0] if isinstance(authors, list) and authors else "Unknown"
+            import re
+            base_filename = f"{title} - {author}".replace("/", "-").replace("\\", "-").replace(":", "").replace("|", " ")
+            # Collapse multiple spaces into double spaces (to match actual file naming)
+            base_filename = re.sub(r' {3,}', '  ', base_filename)
+            
+            # Look for ebook files to extract cover from
+            # Prioritize formats most likely to have covers: EPUB first, then MOBI
+            priority_formats = [
+                ('epubs', '.epub'),
+                ('original_epubs', '.original_epub'), 
+                ('mobi', '.mobi'),
+                ('original_mobi', '.original_mobi'),
+                ('azw3', '.azw3'),
+                ('azw', '.azw')
+            ]
+            
+            # Check priority format directories first
+            for format_dir, file_ext in priority_formats:
+                format_path = os.path.join(self.library_path, format_dir)
+                if os.path.exists(format_path):
+                    for file in os.listdir(format_path):
+                        if (file.startswith(base_filename) and 
+                            file.lower().endswith(file_ext.lower())):
+                            ebook_path = os.path.join(format_path, file)
+                            cover_path = self._extract_cover_from_ebook(ebook_path, book_id)
+                            if cover_path:
+                                return cover_path
+            
+            # Check root directory as fallback
+            try:
+                for file in os.listdir(self.library_path):
+                    if (file.startswith(base_filename) and 
+                        os.path.isfile(os.path.join(self.library_path, file)) and
+                        any(file.lower().endswith(ext) for ext in ['.epub', '.mobi', '.azw3', '.azw'])):
+                        ebook_path = os.path.join(self.library_path, file)
+                        cover_path = self._extract_cover_from_ebook(ebook_path, book_id)
+                        if cover_path:
+                            return cover_path
+            except OSError:
+                pass
+            
+            logger.info(f"No cover extractable for book ID {book_id}")
             return None
 
         except Exception as e:
             logger.error(f"Error getting cover for book {book_id}: {e}")
+            return None
+    
+    def _extract_cover_from_ebook(self, ebook_path: str, book_id: int) -> Optional[str]:
+        """Extract cover image from ebook file and save it temporarily."""
+        try:
+            import tempfile
+            import zipfile
+            from pathlib import Path
+            
+            # Create a temporary directory for extracted covers
+            covers_dir = os.path.join(self.library_path, '.covers')
+            os.makedirs(covers_dir, exist_ok=True)
+            
+            cover_cache_path = os.path.join(covers_dir, f"cover_{book_id}.jpg")
+            
+            # If cover already cached, return it
+            if os.path.exists(cover_cache_path):
+                return cover_cache_path
+            
+            file_ext = os.path.splitext(ebook_path)[1].lower()
+            
+            # Handle EPUB files (which are ZIP archives)
+            if file_ext in ['.epub', '.original_epub']:
+                return self._extract_epub_cover(ebook_path, cover_cache_path)
+            
+            # Handle MOBI files using calibre's ebook-meta command
+            elif file_ext in ['.mobi', '.azw', '.azw3', '.original_mobi']:
+                return self._extract_mobi_cover(ebook_path, cover_cache_path)
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error extracting cover from {ebook_path}: {e}")
+            return None
+    
+    def _extract_epub_cover(self, epub_path: str, output_path: str) -> Optional[str]:
+        """Extract cover from EPUB file."""
+        try:
+            import zipfile
+            import xml.etree.ElementTree as ET
+            
+            with zipfile.ZipFile(epub_path, 'r') as epub:
+                # Look for cover image in common locations
+                cover_candidates = []
+                
+                for file_info in epub.filelist:
+                    filename = file_info.filename.lower()
+                    if ('cover' in filename and 
+                        any(filename.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.gif'])):
+                        cover_candidates.append(file_info.filename)
+                
+                # Try to extract first found cover
+                if cover_candidates:
+                    cover_data = epub.read(cover_candidates[0])
+                    with open(output_path, 'wb') as f:
+                        f.write(cover_data)
+                    logger.debug(f"Extracted EPUB cover to {output_path}")
+                    return output_path
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error extracting EPUB cover: {e}")
+            return None
+    
+    def _extract_mobi_cover(self, mobi_path: str, output_path: str) -> Optional[str]:
+        """Extract cover from MOBI file using calibre's ebook-meta."""
+        try:
+            # Use calibre's ebook-meta to extract cover
+            cmd = [
+                getattr(self.settings if hasattr(self, 'settings') else settings, "CALIBRE_CMD_PATH", "ebook-meta").replace("calibredb", "ebook-meta"),
+                mobi_path,
+                "--get-cover", output_path
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=3  # Reduced timeout from 10 to 3 seconds
+            )
+            
+            if result.returncode == 0 and os.path.exists(output_path):
+                logger.debug(f"Extracted MOBI cover to {output_path}")
+                return output_path
+            
+            return None
+            
+        except subprocess.TimeoutExpired:
+            logger.warning(f"MOBI cover extraction timeout for {mobi_path}")
+            return None
+        except Exception as e:
+            logger.error(f"Error extracting MOBI cover: {e}")
             return None
 
     def _create_book_identifier(self, book: Dict[str, Any]) -> Tuple[str, Tuple[str, ...]]:

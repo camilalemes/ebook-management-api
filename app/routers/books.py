@@ -2,8 +2,9 @@
 """Read-only book listing router for ebook management."""
 
 import os
+import math
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, computed_field
 
@@ -11,6 +12,69 @@ from ..services.calibre_service import get_calibre_service, CalibreService
 from ..services.library_service import get_library_service, LibraryService
 
 router = APIRouter(tags=["books"])
+
+
+@router.get("/libraries")
+async def get_available_libraries():
+    """Get list of available library locations."""
+    # For now, return the main library. This can be extended to support multiple libraries
+    libraries = [
+        {"id": "library", "name": "Main Library", "description": "Primary ebook collection"}
+        # Future: Add more libraries from configuration or database
+        # {"id": "library2", "name": "Secondary Library", "description": "Additional collection"},
+    ]
+    return {"libraries": libraries}
+
+
+def _get_file_size_for_format(book: dict, format_ext: str) -> Optional[int]:
+    """Find file size for a given format extension."""
+    from ..config import settings
+    
+    title = book.get("title", "Unknown")
+    authors = book.get("authors", ["Unknown"])
+    author = authors[0] if isinstance(authors, list) and authors else "Unknown"
+    import re
+    base_filename = f"{title} - {author}".replace("/", "-").replace("\\", "-").replace(":", "").replace("|", " ")
+    # Collapse multiple spaces into double spaces (to match actual file naming)
+    base_filename = re.sub(r' {3,}', '  ', base_filename)
+    
+    library_path = settings.CALIBRE_LIBRARY_PATH
+    
+    # Check root directory first (where mobi files usually are)
+    if os.path.exists(library_path):
+        for file in os.listdir(library_path):
+            file_path = os.path.join(library_path, file)
+            if (os.path.isfile(file_path) and 
+                file.startswith(base_filename) and 
+                file.lower().endswith(f'.{format_ext.lower()}')):
+                try:
+                    return os.path.getsize(file_path)
+                except OSError:
+                    continue
+    
+    # Check format directories
+    format_dirs = ['epubs', 'pdfs', 'mobi', 'azw', 'azw3', 'txt', 'rtf', 'docx', 'kfx', 'original_epubs', 'original_mobi']
+    for format_dir in format_dirs:
+        format_path = os.path.join(library_path, format_dir)
+        if os.path.exists(format_path):
+            for file in os.listdir(format_path):
+                if file.startswith(base_filename):
+                    # Handle different file extensions based on directory
+                    file_matches = False
+                    if format_dir == 'original_epubs' and format_ext.lower() == 'epub' and file.lower().endswith('.original_epub'):
+                        file_matches = True
+                    elif format_dir == 'original_mobi' and format_ext.lower() == 'mobi' and file.lower().endswith('.original_mobi'):
+                        file_matches = True
+                    elif file.lower().endswith(f'.{format_ext.lower()}'):
+                        file_matches = True
+                    
+                    if file_matches:
+                        try:
+                            return os.path.getsize(os.path.join(format_path, file))
+                        except OSError:
+                            continue
+    
+    return None
 
 
 class Book(BaseModel):
@@ -33,18 +97,24 @@ class Book(BaseModel):
 class BookCollection(BaseModel):
     books: List[Book]
     total: int
+    page: int = 1
+    page_size: int = 50
+    total_pages: int = 1
 
 
 @router.get("/libraries/{location_id}/books", response_model=BookCollection)
 async def list_books(
         location_id: str,
+        page: int = Query(1, ge=1, description="Page number (1-based)"),
+        page_size: int = Query(50, ge=1, le=200, description="Number of books per page (max 200)"),
+        search: str = Query("", description="Search term to filter books by title or author"),
         calibre_service: CalibreService = Depends(get_calibre_service),
         library_service: LibraryService = Depends(get_library_service)
 ):
     """List books from specified location (calibre or replica)."""
     
-    if location_id == "calibre":
-        # Read from Calibre database (via metadata.db in replica)
+    if location_id in ["library", "calibre"]:
+        # Read from library database (via metadata.db in replica)
         try:
             books_data = calibre_service.get_books()
             books = []
@@ -58,7 +128,8 @@ async def list_books(
                 else:
                     authors = ["Unknown"]
 
-                # Fix format extraction
+
+                # Fix format extraction - handle both file paths and extensions
                 formats = []
                 path = None
                 size = None
@@ -66,15 +137,25 @@ async def list_books(
 
                 for fmt in book.get("formats", []):
                     try:
-                        ext = os.path.splitext(fmt)[1].lstrip('.').lower()
-                        if ext:
-                            formats.append(ext)
-
-                        if path is None and os.path.exists(fmt):
-                            path = fmt
-                            stat = os.stat(fmt)
-                            size = stat.st_size
-                            last_modified = stat.st_mtime
+                        # Check if fmt is a file path or just an extension
+                        if os.path.exists(fmt):
+                            # It's a file path (original Calibre structure)
+                            ext = os.path.splitext(fmt)[1].lstrip('.').lower()
+                            if ext:
+                                formats.append(ext)
+                            if path is None:
+                                path = fmt
+                                stat = os.stat(fmt)
+                                size = stat.st_size
+                                last_modified = stat.st_mtime
+                        else:
+                            # It's just an extension (from filesystem detection)
+                            formats.append(fmt.lower())
+                            # Try to find actual file for size information
+                            if size is None:
+                                file_size = _get_file_size_for_format(book, fmt.lower())
+                                if file_size:
+                                    size = file_size
                     except (AttributeError, IndexError, FileNotFoundError):
                         continue
 
@@ -88,10 +169,37 @@ async def list_books(
                     path=path
                 ))
 
-            return BookCollection(books=books, total=len(books))
+            # Apply search filter if provided
+            search_term = search.strip()
+            if search_term:
+                search_lower = search_term.lower()
+                # Use filter with generator for memory efficiency
+                def matches_search(book):
+                    # Check title first (most common match)
+                    if search_lower in book.title.lower():
+                        return True
+                    # Only check authors if title doesn't match
+                    return any(search_lower in author.lower() for author in book.authors)
+                
+                books = [book for book in books if matches_search(book)]
+
+            # Calculate pagination
+            total_books = len(books)
+            total_pages = math.ceil(total_books / page_size) if total_books > 0 else 1
+            start_index = (page - 1) * page_size
+            end_index = start_index + page_size
+            paginated_books = books[start_index:end_index]
+
+            return BookCollection(
+                books=paginated_books, 
+                total=total_books,
+                page=page,
+                page_size=page_size,
+                total_pages=total_pages
+            )
         except Exception as e:
             import logging
-            logging.error(f"Error retrieving Calibre books: {str(e)}")
+            logging.error(f"Error retrieving books: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error retrieving books: {str(e)}")
 
     elif location_id.startswith("library"):
@@ -118,7 +226,34 @@ async def list_books(
                 path=file_data['path']
             ))
         
-        return BookCollection(books=books, total=len(books))
+        # Apply search filter if provided
+        search_term = search.strip()
+        if search_term:
+            search_lower = search_term.lower()
+            # Use filter with generator for memory efficiency
+            def matches_search(book):
+                # Check title first (most common match)
+                if search_lower in book.title.lower():
+                    return True
+                # Only check authors if title doesn't match
+                return any(search_lower in author.lower() for author in book.authors)
+            
+            books = [book for book in books if matches_search(book)]
+        
+        # Calculate pagination
+        total_books = len(books)
+        total_pages = math.ceil(total_books / page_size) if total_books > 0 else 1
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        paginated_books = books[start_index:end_index]
+
+        return BookCollection(
+            books=paginated_books, 
+            total=total_books,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages
+        )
     
     else:
         raise HTTPException(status_code=404, detail=f"Location {location_id} not found")
@@ -129,7 +264,7 @@ async def search_books(
         q: str,
         calibre_service: CalibreService = Depends(get_calibre_service)
 ):
-    """Search books in the Calibre library."""
+    """Search books in the library."""
     try:
         books_data = calibre_service.search_books(q)
         books = []
@@ -187,10 +322,37 @@ async def get_book_metadata(
 ):
     """Get detailed metadata for a book."""
     try:
-        metadata = calibre_service.get_book_metadata(book_id)
-        if not metadata:
+        # Get basic book information from the book list
+        books_data = calibre_service.get_books()
+        book = None
+        
+        for b in books_data:
+            if b["id"] == book_id:
+                book = b
+                break
+        
+        if not book:
             raise HTTPException(status_code=404, detail=f"Book with ID {book_id} not found")
-        return metadata
+        
+        # Create proper metadata response that the UI expects
+        metadata = {
+            "id": book["id"],
+            "title": book.get("title", "Unknown"),
+            "authors": book.get("authors", ["Unknown"]),
+            "publisher": book.get("publisher"),
+            "published": book.get("published"),
+            "isbn": book.get("isbn"),
+            "tags": book.get("tags", []),
+            "rating": book.get("rating"),
+            "comments": book.get("comments"),
+            "series": book.get("series"),
+            "series_index": book.get("series_index"),
+            "language": book.get("language")
+        }
+        
+        # Return in the format the UI expects
+        return {"metadata": metadata}
+        
     except Exception as e:
         import logging
         logging.error(f"Error retrieving book metadata: {str(e)}")
@@ -203,12 +365,21 @@ async def get_book_cover(
         calibre_service: CalibreService = Depends(get_calibre_service)
 ):
     """Get the cover image for a book."""
-    cover_path = calibre_service.get_cover_path(book_id)
+    try:
+        cover_path = calibre_service.get_cover_path(book_id)
 
-    if not cover_path or not os.path.exists(cover_path):
+        if not cover_path or not os.path.exists(cover_path):
+            # Log info for debugging but return proper 404
+            import logging
+            logging.info(f"No cover found for book ID {book_id}")
+            raise HTTPException(status_code=404, detail=f"Cover for book {book_id} not found")
+
+        return FileResponse(cover_path, media_type='image/jpeg')
+        
+    except Exception as e:
+        import logging  
+        logging.error(f"Error retrieving cover for book {book_id}: {str(e)}")
         raise HTTPException(status_code=404, detail=f"Cover for book {book_id} not found")
-
-    return FileResponse(cover_path)
 
 
 @router.get("/books/{book_id}/download")
@@ -219,7 +390,7 @@ async def download_book(
 ):
     """Download a book file in the specified format."""
     try:
-        # Get book metadata to find available formats
+        # Get book metadata to find title and authors
         books_data = calibre_service.get_books()
         book = None
         
@@ -231,8 +402,40 @@ async def download_book(
         if not book:
             raise HTTPException(status_code=404, detail=f"Book with ID {book_id} not found")
         
-        formats = book.get("formats", [])
-        if not formats:
+        # Get title and authors for filename matching
+        title = book.get("title", "Unknown")
+        authors = book.get("authors", ["Unknown"])
+        author = authors[0] if isinstance(authors, list) else str(authors)
+        
+        # Create expected filename pattern: "Title - Author"
+        import re
+        base_filename = f"{title} - {author}".replace("/", "-").replace("\\", "-").replace(":", "").replace("|", " ")
+        # Collapse multiple spaces into double spaces (to match actual file naming)
+        base_filename = re.sub(r' {3,}', '  ', base_filename)
+        
+        # Get library path from config
+        from ..config import settings
+        library_path = settings.CALIBRE_LIBRARY_PATH
+        
+        # Search for files in the synchronized library structure
+        available_files = []
+        format_dirs = ['epubs', 'pdfs', 'mobi', 'azw', 'azw3', 'txt', 'rtf', 'docx', 'kfx', 'original_epubs', 'original_mobi']
+        
+        for format_dir in format_dirs:
+            format_path = os.path.join(library_path, format_dir)
+            if os.path.exists(format_path):
+                for file in os.listdir(format_path):
+                    if file.startswith(base_filename):
+                        file_path = os.path.join(format_path, file)
+                        if os.path.isfile(file_path):
+                            available_files.append(file_path)
+        
+        # Also check root directory for files
+        for file in os.listdir(library_path):
+            if file.startswith(base_filename) and os.path.isfile(os.path.join(library_path, file)):
+                available_files.append(os.path.join(library_path, file))
+        
+        if not available_files:
             raise HTTPException(status_code=404, detail=f"No files available for book {book_id}")
         
         # Find the requested format or use the first available
@@ -240,31 +443,30 @@ async def download_book(
         if format:
             # Look for specific format
             format_lower = format.lower()
-            for fmt in formats:
-                if fmt.lower().endswith(f'.{format_lower}'):
-                    file_path = fmt
+            for file in available_files:
+                if file.lower().endswith(f'.{format_lower}'):
+                    file_path = file
                     break
             if not file_path:
+                available_formats = [os.path.splitext(f)[1].lstrip('.') for f in available_files]
                 raise HTTPException(
                     status_code=404, 
-                    detail=f"Format '{format}' not available for book {book_id}. Available formats: {[os.path.splitext(f)[1].lstrip('.') for f in formats]}"
+                    detail=f"Format '{format}' not available for book {book_id}. Available formats: {available_formats}"
                 )
         else:
-            # Use first available format
-            file_path = formats[0]
+            # Use first available format, preferring epub
+            for file in available_files:
+                if file.lower().endswith('.epub'):
+                    file_path = file
+                    break
+            if not file_path:
+                file_path = available_files[0]
         
         if not os.path.exists(file_path):
             raise HTTPException(status_code=404, detail=f"Book file not found: {file_path}")
         
-        # Get clean filename for download
+        # Use the actual filename for download
         filename = os.path.basename(file_path)
-        if not filename or filename.startswith('.'):
-            # Generate filename from book title and format
-            title = book.get("title", "Unknown")
-            authors = book.get("authors", ["Unknown"])
-            author = authors[0] if isinstance(authors, list) else str(authors)
-            ext = os.path.splitext(file_path)[1]
-            filename = f"{title} - {author}{ext}"
         
         return FileResponse(
             path=file_path,
@@ -286,8 +488,8 @@ async def download_book_from_library(
         library_service: LibraryService = Depends(get_library_service)
 ):
     """Download a book file from a specific library location."""
-    if location_id == "calibre":
-        # Redirect to main download endpoint for Calibre books
+    if location_id in ["library", "calibre"]:
+        # Redirect to main download endpoint for library books
         return await download_book(book_id, format)
     
     elif location_id.startswith("library"):
