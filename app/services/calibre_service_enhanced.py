@@ -404,4 +404,7 @@ class CalibreServiceEnhanced(LoggerMixin):
 @lru_cache()
 def get_calibre_service_enhanced() -> CalibreServiceEnhanced:
     """Get enhanced Calibre service instance with caching."""
-    return CalibreServiceEnhanced(settings.CALIBRE_LIBRARY_PATH)
+    # Get the first library path from LIBRARY_PATHS
+    library_paths = [path.strip() for path in settings.LIBRARY_PATHS.split(',') if path.strip()]
+    primary_library_path = library_paths[0] if library_paths else ""
+    return CalibreServiceEnhanced(primary_library_path)

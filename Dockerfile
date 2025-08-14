@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     gnupg2 \
     ca-certificates \
+    util-linux \
     # Install Calibre from package manager (for metadata.db reading)
     calibre \
     # Clean up
@@ -32,15 +33,18 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY . .
 
+# Environment variables for user/group IDs
+ENV PUID=1000
+ENV PGID=1000
+
 # Create directories for volumes (read-only app)
 RUN mkdir -p /app/data/replicas \
              /app/logs \
              /config/logs
 
-# Create non-root user for security
-RUN adduser --disabled-password --gecos '' appuser && \
-    chown -R appuser:appuser /app /config
-USER appuser
+# Copy entrypoint script
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # Expose port
 EXPOSE 8000
@@ -49,5 +53,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Command to run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Run with entrypoint script as root, but drop privileges inside
+USER root
+ENTRYPOINT ["/entrypoint.sh"]

@@ -5,7 +5,6 @@ services:
     restart: unless-stopped
     environment:
       # Library Configuration (NAS only - read-only)
-      - CALIBRE_LIBRARY_PATH=/data/ebook-library
       - LIBRARY_PATHS=/data/ebook-library
       - CALIBRE_CMD_PATH=calibredb
       # Logging

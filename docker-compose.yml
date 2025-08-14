@@ -1,0 +1,18 @@
+services:
+  ebook-api:
+    image: ebook-api:dev
+    container_name: ebook-api
+    ports:
+      - "8002:8000"
+    volumes:
+      - ./config:/config
+      - ${MEDIA_PATH}/ebook-library:/data/ebook-library:ro
+    environment:
+      - LIBRARY_PATHS=/data/ebook-library
+      - CALIBRE_CMD_PATH=calibredb
+      - LOG_LEVEL=INFO
+      - LOG_FILE=/config/logs/app.log
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ}
+    restart: unless-stopped

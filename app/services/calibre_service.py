@@ -630,16 +630,24 @@ class CalibreService:
 # Create a singleton instance
 def get_calibre_service() -> CalibreService:
     """Get a CalibreService instance configured with settings."""
-    # Ensure CALIBRE_LIBRARY_PATH is set in your settings
-    if not hasattr(settings, 'CALIBRE_LIBRARY_PATH') or not settings.CALIBRE_LIBRARY_PATH:
-        logger.critical("CALIBRE_LIBRARY_PATH is not configured in settings.")
-        raise ValueError("CALIBRE_LIBRARY_PATH must be set in configuration.")
+    # Use the first path from LIBRARY_PATHS as the primary library path
+    if not hasattr(settings, 'LIBRARY_PATHS') or not settings.LIBRARY_PATHS:
+        logger.critical("LIBRARY_PATHS is not configured in settings.")
+        raise ValueError("LIBRARY_PATHS must be set in configuration.")
+
+    # Get the first library path from the comma-separated list
+    library_paths = [path.strip() for path in settings.LIBRARY_PATHS.split(',') if path.strip()]
+    if not library_paths:
+        logger.critical("No valid library paths found in LIBRARY_PATHS.")
+        raise ValueError("At least one library path must be configured.")
+    
+    primary_library_path = library_paths[0]
 
     # Basic check if the main library path seems valid
-    if not os.path.isdir(settings.CALIBRE_LIBRARY_PATH):
+    if not os.path.isdir(primary_library_path):
         logger.warning(
-            f"The configured CALIBRE_LIBRARY_PATH '{settings.CALIBRE_LIBRARY_PATH}' does not exist or is not a directory.")
+            f"The configured primary library path '{primary_library_path}' does not exist or is not a directory.")
         # Depending on strictness, you might raise an error here or let Calibre handle it.
         # For now, let it proceed, Calibre might create it or error out appropriately.
 
-    return CalibreService(library_path=settings.CALIBRE_LIBRARY_PATH)
+    return CalibreService(library_path=primary_library_path)

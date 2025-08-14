@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
     # Startup
     logger = get_logger(__name__)
     logger.info("📚 Starting Ebook Management API")
-    logger.info(f"📚 Library path: {settings.CALIBRE_LIBRARY_PATH}")
+    logger.info(f"📚 Library paths: {settings.LIBRARY_PATHS}")
     logger.info(f"📂 Library paths: {len(settings.library_paths_list)} configured")
     logger.info(f"🌐 API running on {settings.API_HOST}:{settings.API_PORT}")
     

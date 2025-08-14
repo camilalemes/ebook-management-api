@@ -17,11 +17,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 class Settings(BaseSettings):
     """Application settings with validation and defaults."""
     
-    # Calibre Configuration
-    CALIBRE_LIBRARY_PATH: str = Field(
-        ..., 
-        description="Path to the main Calibre library"
-    )
+    # Calibre Configuration (deprecated - use LIBRARY_PATHS instead)
     CALIBRE_CMD_PATH: str = Field(
         default="calibredb",
         description="Path to calibredb executable"
@@ -87,30 +83,6 @@ class Settings(BaseSettings):
         description="Comma-separated list of allowed file extensions"
     )
     
-    @field_validator("CALIBRE_LIBRARY_PATH")
-    @classmethod
-    def validate_calibre_path(cls, v: str) -> str:
-        """Validate that the Calibre library path exists."""
-        if not v:
-            raise ConfigurationException(
-                detail="CALIBRE_LIBRARY_PATH is required",
-                config_key="CALIBRE_LIBRARY_PATH"
-            )
-        
-        path = Path(v)
-        if not path.exists():
-            raise ConfigurationException(
-                detail=f"Calibre library path does not exist: {v}",
-                config_key="CALIBRE_LIBRARY_PATH"
-            )
-        
-        if not path.is_dir():
-            raise ConfigurationException(
-                detail=f"Calibre library path is not a directory: {v}",
-                config_key="CALIBRE_LIBRARY_PATH"
-            )
-        
-        return str(path.absolute())
     
     @field_validator("LOG_LEVEL")
     @classmethod

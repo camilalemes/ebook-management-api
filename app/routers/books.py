@@ -38,7 +38,9 @@ def _get_file_size_for_format(book: dict, format_ext: str) -> Optional[int]:
     # Collapse multiple spaces into double spaces (to match actual file naming)
     base_filename = re.sub(r' {3,}', '  ', base_filename)
     
-    library_path = settings.CALIBRE_LIBRARY_PATH
+    # Get the first library path from LIBRARY_PATHS
+    library_paths = [path.strip() for path in settings.LIBRARY_PATHS.split(',') if path.strip()]
+    library_path = library_paths[0] if library_paths else ""
     
     # Check root directory first (where mobi files usually are)
     if os.path.exists(library_path):
@@ -415,7 +417,9 @@ async def download_book(
         
         # Get library path from config
         from ..config import settings
-        library_path = settings.CALIBRE_LIBRARY_PATH
+        # Get the first library path from LIBRARY_PATHS
+        library_paths = [path.strip() for path in settings.LIBRARY_PATHS.split(',') if path.strip()]
+        library_path = library_paths[0] if library_paths else ""
         
         # Search for files in the synchronized library structure
         available_files = []
