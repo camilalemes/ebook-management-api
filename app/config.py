@@ -26,9 +26,9 @@ class Settings(BaseSettings):
         default="calibredb",
         description="Path to calibredb executable"
     )
-    REPLICA_PATHS: str = Field(
+    LIBRARY_PATHS: str = Field(
         default="",
-        description="Comma-separated paths to replica locations"
+        description="Comma-separated paths to library locations (read-only)"
     )
     
     # API Configuration
@@ -125,23 +125,23 @@ class Settings(BaseSettings):
         return v.upper()
 
     @property
-    def replica_paths_list(self) -> List[str]:
+    def library_paths_list(self) -> List[str]:
         """Convert comma-separated paths to a list of validated paths."""
-        if not self.REPLICA_PATHS:
+        if not self.LIBRARY_PATHS:
             return []
         
         paths = []
-        for path_str in self.REPLICA_PATHS.split(","):
+        for path_str in self.LIBRARY_PATHS.split(","):
             path_str = path_str.strip()
             if path_str:
                 path = Path(path_str)
                 if path.exists() and path.is_dir():
                     paths.append(str(path.absolute()))
                 else:
-                    # Log warning but don't fail - replica paths might be created later
+                    # Log warning but don't fail - library paths might be created later
                     import logging
                     logging.getLogger(__name__).warning(
-                        f"Replica path does not exist or is not a directory: {path_str}"
+                        f"Library path does not exist or is not a directory: {path_str}"
                     )
         
         return paths

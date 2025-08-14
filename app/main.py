@@ -22,7 +22,7 @@ from app.config import settings
 from app.exceptions import CalibreAPIException
 from app.middleware import setup_middleware
 from app.models import ErrorResponse, HealthCheckResponse
-from app.routers import books, sync, comparison
+from app.routers import books
 from app.utils.logging import setup_logging, get_logger
 
 
@@ -31,15 +31,15 @@ async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
     logger = get_logger(__name__)
-    logger.info("🚀 Starting Calibre Sync API")
+    logger.info("📚 Starting Ebook Management API")
     logger.info(f"📚 Library path: {settings.CALIBRE_LIBRARY_PATH}")
-    logger.info(f"📂 Replica paths: {len(settings.replica_paths_list)} configured")
+    logger.info(f"📂 Library paths: {len(settings.library_paths_list)} configured")
     logger.info(f"🌐 API running on {settings.API_HOST}:{settings.API_PORT}")
     
     yield
     
     # Shutdown
-    logger.info("🛑 Shutting down Calibre Sync API")
+    logger.info("🛑 Shutting down Ebook Management API")
 
 
 def create_application() -> FastAPI:
@@ -57,8 +57,8 @@ def create_application() -> FastAPI:
     
     # Create FastAPI app
     app = FastAPI(
-        title="Calibre Sync API",
-        description="Enhanced API for synchronizing Calibre libraries to external devices",
+        title="Ebook Management API",
+        description="Read-only API for browsing and managing ebook collections",
         version=settings.API_VERSION,
         debug=settings.API_DEBUG,
         lifespan=lifespan,
@@ -72,15 +72,9 @@ def create_application() -> FastAPI:
     # Setup exception handlers
     setup_exception_handlers(app)
     
-    # Include routers with both old paths (for backward compatibility) and new versioned paths
+    # Include routers
     app.include_router(books.router)  # Keep old paths working
-    app.include_router(sync.router)   # Keep old paths working  
-    app.include_router(comparison.router)  # Keep old paths working
-    
-    # Also include versioned paths
-    app.include_router(books.router, prefix="/api/v1")
-    app.include_router(sync.router, prefix="/api/v1")
-    app.include_router(comparison.router, prefix="/api/v1")
+    app.include_router(books.router, prefix="/api/v1")  # Versioned paths
     
     # Add root endpoints
     setup_root_endpoints(app)
@@ -138,7 +132,7 @@ def setup_root_endpoints(app: FastAPI) -> None:
     async def root():
         """Root endpoint with API information."""
         return {
-            "message": "Welcome to Calibre Sync API",
+            "message": "Welcome to Ebook Management API",
             "version": settings.API_VERSION,
             "docs_url": "/docs" if settings.API_DEBUG else None,
             "health_url": "/health"
@@ -166,7 +160,7 @@ def setup_root_endpoints(app: FastAPI) -> None:
             version=settings.API_VERSION,
             calibre_available=calibre_available,
             library_accessible=library_accessible,
-            replica_count=len(settings.replica_paths_list)
+            library_count=len(settings.library_paths_list)
         )
 
 

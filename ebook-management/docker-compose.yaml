@@ -4,9 +4,9 @@ services:
     container_name: ebook-management-api
     restart: unless-stopped
     environment:
-      # Calibre Library Configuration (Windows PC via SMB)
-      - CALIBRE_LIBRARY_PATH=/pc-shares/calibre-library
-      - REPLICA_PATHS=/pc-shares/ebook-replicas,/data/ebook-replicas
+      # Library Configuration (NAS only - read-only)
+      - CALIBRE_LIBRARY_PATH=/data/ebook-library
+      - LIBRARY_PATHS=/data/ebook-library
       - CALIBRE_CMD_PATH=calibredb
       # Logging
       - LOG_LEVEL=INFO
@@ -19,30 +19,19 @@ services:
     volumes:
       # Config and logs
       - ${CONFIG_PATH}/ebook-management-api:/config
-      # NAS ebook replicas
-      - ${MEDIA_PATH}/ebook-replicas:/data/ebook-replicas
-      # PC SMB shares (OneDrive Calibre + fallback replica)
-      - type: volume
-        source: pc-calibre-library
-        target: /pc-shares/calibre-library
-        read_only: true
-      - type: volume
-        source: pc-ebook-replicas
-        target: /pc-shares/ebook-replicas
+      # NAS ebook library (read-only access)
+      - ${MEDIA_PATH}/ebook-library:/data/ebook-library:ro
     networks:
       - home
 
     # Health check
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://0.0.0.0:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
-    # Wait for PC SMB mounts
-    depends_on:
-      pc-smb-mounts:
-        condition: service_healthy
+      start_period: 30s
+    # No dependencies - reads directly from NAS
     labels:
       # Traefik integration
       - traefik.enable=true
@@ -52,61 +41,6 @@ services:
       # Watchtower integration
       - com.centurylinklabs.watchtower.enable=true
 
-  # PC SMB mounts service (only for Windows PC shares)
-  pc-smb-mounts:
-    image: alpine:latest
-    container_name: ebook-pc-smb-mounts
-    restart: unless-stopped
-    privileged: true
-    command: >
-      sh -c "
-      echo 'Installing SMB utilities...' &&
-      apk add --no-cache cifs-utils curl &&
-      
-      echo 'Creating mount points...' &&
-      mkdir -p /mnt/calibre-library /mnt/ebook-replicas &&
-      
-      echo 'Waiting for PC...' &&
-      until ping -c 1 ${PC_IP} &> /dev/null; do 
-        echo 'PC not reachable, waiting...'
-        sleep 10
-      done &&
-      
-      echo 'Mounting SMB shares from Windows PC...' &&
-      mount -t cifs //${PC_IP}/CalibreLibrary /mnt/calibre-library -o ro,username=${PC_SMB_USER},password=${PC_SMB_PASS},uid=${USER_ID},gid=${GROUP_ID} &&
-      mount -t cifs //${PC_IP}/EbookReplicas /mnt/ebook-replicas -o rw,username=${PC_SMB_USER},password=${PC_SMB_PASS},uid=${USER_ID},gid=${GROUP_ID} &&
-      
-      echo 'PC SMB mounts ready!' &&
-      tail -f /dev/null
-      "
-    environment:
-      # PC configuration
-      - PC_IP=${PC_IP:-192.168.50.245}
-      - PC_SMB_USER=${PC_SMB_USER:-guest}
-      - PC_SMB_PASS=${PC_SMB_PASS:-}
-      - USER_ID=${USER_ID}
-      - GROUP_ID=${GROUP_ID}
-    volumes:
-      # Share PC mounts with main app container
-      - pc-calibre-library:/mnt/calibre-library
-      - pc-ebook-replicas:/mnt/ebook-replicas
-    networks:
-      - home
-
-    healthcheck:
-      test: >
-        sh -c "
-        mountpoint -q /mnt/calibre-library &&
-        mountpoint -q /mnt/ebook-replicas
-        "
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-
-# Only PC SMB volumes needed
-volumes:
-  pc-calibre-library:
-    driver: local
-  pc-ebook-replicas:
-    driver: local
+networks:
+  home:
+    external: true

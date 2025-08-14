@@ -6,14 +6,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies including Calibre
+# Install system dependencies (Calibre for metadata reading only)
 RUN apt-get update && apt-get install -y \
     # Basic system tools
     curl \
     wget \
     gnupg2 \
     ca-certificates \
-    # Install Calibre from package manager (simpler)
+    # Install Calibre from package manager (for metadata.db reading)
     calibre \
     # Clean up
     && apt-get clean \
@@ -32,9 +32,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY . .
 
-# Create directories for volumes
-RUN mkdir -p /app/data/calibre-library \
-             /app/data/replicas \
+# Create directories for volumes (read-only app)
+RUN mkdir -p /app/data/replicas \
              /app/logs \
              /config/logs
 

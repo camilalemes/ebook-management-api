@@ -224,4 +224,4 @@ class HealthCheckResponse(BaseResponse):
     version: str = Field(description="API version")
     calibre_available: bool = Field(description="Whether Calibre is available")
     library_accessible: bool = Field(description="Whether library is accessible")
-    replica_count: int = Field(ge=0, description="Number of configured replicas")
+    library_count: int = Field(ge=0, description="Number of configured libraries")
