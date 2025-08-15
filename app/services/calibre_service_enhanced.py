@@ -1,410 +1,342 @@
-"""Enhanced Calibre service with caching, better error handling, and async support."""
+"""Enhanced Calibre service that works with preserved Calibre directory structure."""
 
-import asyncio
+import os
 import json
 import subprocess
-from pathlib import Path
+import logging
+import xml.etree.ElementTree as ET
 from typing import List, Dict, Any, Optional
+from pathlib import Path
 from functools import lru_cache
 
 from ..config import settings
-from ..exceptions import CalibreServiceException, CalibreCommandException, BookNotFoundException
-from ..utils.logging import LoggerMixin
-from ..utils.cache import cache_books, cache_metadata, cache_covers
 
 
-class CalibreServiceEnhanced(LoggerMixin):
-    """Enhanced Calibre service with caching and better error handling."""
+logger = logging.getLogger("calibre_service_enhanced")
+
+
+class CalibreServiceEnhanced:
+    """Enhanced Calibre service that works with preserved Calibre directory structure."""
     
     def __init__(self, library_path: str):
-        self.library_path = Path(library_path)
-        self.calibre_cmd = settings.CALIBRE_CMD_PATH
-        self._validate_setup()
+        """Initialize with path to Calibre library using preserved directory structure."""
+        self.library_path = library_path
+        self._books_cache = None
+        self._cache_timestamp = None
     
-    def _validate_setup(self) -> None:
-        """Validate Calibre setup and library path."""
-        if not self.library_path.exists():
-            raise CalibreServiceException(
-                f"Library path does not exist: {self.library_path}",
-                error_code="LIBRARY_PATH_NOT_FOUND"
-            )
+    def get_books(self) -> List[Dict[str, Any]]:
+        """Get books from the preserved Calibre directory structure."""
+        books = []
         
-        if not self.library_path.is_dir():
-            raise CalibreServiceException(
-                f"Library path is not a directory: {self.library_path}",
-                error_code="INVALID_LIBRARY_PATH"
-            )
-        
-        # Check if calibredb is available
+        if not os.path.exists(self.library_path):
+            logger.error(f"Library path does not exist: {self.library_path}")
+            return books
+
+        # Scan the directory structure for author directories
         try:
-            subprocess.run(
-                [self.calibre_cmd, "--version"],
-                capture_output=True,
-                check=True,
-                timeout=10
-            )
-        except subprocess.CalledProcessError as e:
-            raise CalibreServiceException(
-                f"Calibre command failed: {e}",
-                error_code="CALIBRE_NOT_AVAILABLE"
-            )
-        except subprocess.TimeoutExpired:
-            raise CalibreServiceException(
-                "Calibre command timed out",
-                error_code="CALIBRE_TIMEOUT"
-            )
-        except FileNotFoundError:
-            raise CalibreServiceException(
-                f"Calibre command not found: {self.calibre_cmd}",
-                error_code="CALIBRE_NOT_FOUND"
-            )
+            for author_dir in os.listdir(self.library_path):
+                author_path = os.path.join(self.library_path, author_dir)
+                
+                # Skip files and non-directories
+                if not os.path.isdir(author_path) or author_dir.startswith('.'):
+                    continue
+                
+                # Skip system files
+                if author_dir.lower() in ['metadata.db', 'metadata_db_prefs_backup.json']:
+                    continue
+                
+                # Scan book directories within author directory
+                try:
+                    for book_dir in os.listdir(author_path):
+                        book_path = os.path.join(author_path, book_dir)
+                        
+                        if not os.path.isdir(book_path):
+                            continue
+                        
+                        book_data = self._extract_book_data(author_dir, book_dir, book_path)
+                        if book_data:
+                            books.append(book_data)
+                            
+                except OSError as e:
+                    logger.warning(f"Error scanning author directory {author_path}: {e}")
+                    continue
+                    
+        except OSError as e:
+            logger.error(f"Error scanning library directory {self.library_path}: {e}")
+            return books
+        
+        # Sort books by title
+        books.sort(key=lambda x: x.get('title', '').lower())
+        
+        logger.info(f"Found {len(books)} books in Calibre directory structure")
+        return books
     
-    async def _run_calibredb_async(
-        self, 
-        command: List[str], 
-        timeout: int = 30,
-        custom_library_path: Optional[str] = None
-    ) -> subprocess.CompletedProcess:
-        """Run calibredb command asynchronously."""
-        lib_path = custom_library_path or str(self.library_path)
-        cmd = [self.calibre_cmd] + command + ["--library-path", lib_path]
-        
-        self.logger.debug(f"Running async command: {' '.join(cmd)}")
-        
+    def _extract_book_data(self, author_name: str, book_dir: str, book_path: str) -> Optional[Dict[str, Any]]:
+        """Extract book data from a Calibre book directory."""
         try:
-            # Run in thread pool to avoid blocking
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    encoding='utf-8',
-                    check=True,
-                    timeout=timeout
-                )
-            )
-            return result
+            # Extract book ID from directory name (format: "Title (ID)")
+            book_id = None
+            if book_dir.endswith(')') and '(' in book_dir:
+                try:
+                    book_id = int(book_dir.split('(')[-1].rstrip(')'))
+                except ValueError:
+                    logger.warning(f"Could not extract ID from directory name: {book_dir}")
             
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"Calibre command failed: {' '.join(cmd)}")
-            self.logger.error(f"Error output: {e.stderr}")
-            raise CalibreCommandException(' '.join(cmd), e.stderr)
+            if book_id is None:
+                # Generate a hash-based ID if we can't extract from directory name
+                import hashlib
+                book_id = abs(hash(f"{author_name}_{book_dir}")) % (10**8)
             
-        except subprocess.TimeoutExpired:
-            self.logger.error(f"Calibre command timed out: {' '.join(cmd)}")
-            raise CalibreServiceException(
-                f"Command timed out after {timeout}s",
-                error_code="CALIBRE_TIMEOUT"
-            )
-    
-    def _run_calibredb(
-        self, 
-        command: List[str], 
-        timeout: int = 30,
-        custom_library_path: Optional[str] = None
-    ) -> subprocess.CompletedProcess:
-        """Run calibredb command synchronously."""
-        lib_path = custom_library_path or str(self.library_path)
-        cmd = [self.calibre_cmd] + command + ["--library-path", lib_path]
-        
-        self.logger.debug(f"Running command: {' '.join(cmd)}")
-        
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                check=True,
-                timeout=timeout
-            )
-            return result
+            # Get title from directory name (remove ID part)
+            title = book_dir
+            if '(' in book_dir and book_dir.endswith(')'):
+                title = book_dir.rsplit('(', 1)[0].strip()
             
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"Calibre command failed: {' '.join(cmd)}")
-            self.logger.error(f"Error output: {e.stderr}")
-            raise CalibreCommandException(' '.join(cmd), e.stderr)
+            # Check for metadata.opf file
+            metadata_path = os.path.join(book_path, 'metadata.opf')
+            if os.path.exists(metadata_path):
+                try:
+                    metadata = self._parse_opf_metadata(metadata_path)
+                    if metadata:
+                        title = metadata.get('title', title)
+                        author_name = metadata.get('authors', [author_name])[0] if metadata.get('authors') else author_name
+                except Exception as e:
+                    logger.debug(f"Could not parse metadata.opf for {book_dir}: {e}")
             
-        except subprocess.TimeoutExpired:
-            self.logger.error(f"Calibre command timed out: {' '.join(cmd)}")
-            raise CalibreServiceException(
-                f"Command timed out after {timeout}s",
-                error_code="CALIBRE_TIMEOUT"
-            )
-    
-    @cache_books(ttl=300)  # Cache for 5 minutes
-    def get_books(self, library_path: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get all books from the library with caching."""
-        current_library_path = library_path or str(self.library_path)
-        
-        self.logger.info(f"Fetching books from library: {current_library_path}")
-        
-        try:
-            result = self._run_calibredb(
-                ["list", "--for-machine", "--fields", "title,authors,formats,id"],
-                custom_library_path=current_library_path
-            )
+            # Find all ebook format files in the directory
+            formats = []
+            format_files = {}
+            cover_path = None
             
-            books = json.loads(result.stdout)
+            for filename in os.listdir(book_path):
+                file_path = os.path.join(book_path, filename)
+                
+                if not os.path.isfile(file_path):
+                    continue
+                
+                # Check for cover image
+                if filename.lower() == 'cover.jpg':
+                    cover_path = file_path
+                    continue
+                
+                # Check for ebook formats
+                _, ext = os.path.splitext(filename.lower())
+                if ext in ['.epub', '.mobi', '.azw', '.azw3', '.pdf', '.txt', '.rtf', '.docx']:
+                    format_ext = ext.lstrip('.')
+                    
+                    # Handle original formats
+                    if filename.lower().endswith('.original_epub'):
+                        format_ext = 'epub'
+                    elif filename.lower().endswith('.original_mobi'):
+                        format_ext = 'mobi'
+                    elif filename.lower().endswith('.original_azw3'):
+                        format_ext = 'azw3'
+                    
+                    if format_ext not in formats:
+                        formats.append(format_ext)
+                    format_files[format_ext] = file_path
             
-            # Process and validate book data
-            processed_books = []
-            for book in books:
-                processed_book = self._process_book_data(book)
-                if processed_book:
-                    processed_books.append(processed_book)
+            # Get file stats from first available format file
+            size = None
+            last_modified = None
+            main_file_path = None
             
-            self.logger.info(f"Retrieved {len(processed_books)} books")
-            return processed_books
-            
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to decode JSON from calibredb output: {e}")
-            raise CalibreServiceException(
-                "Invalid response from Calibre database",
-                error_code="INVALID_CALIBRE_RESPONSE"
-            )
-    
-    async def get_books_async(self, library_path: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get all books from the library asynchronously."""
-        current_library_path = library_path or str(self.library_path)
-        
-        self.logger.info(f"Fetching books async from library: {current_library_path}")
-        
-        try:
-            result = await self._run_calibredb_async(
-                ["list", "--for-machine", "--fields", "title,authors,formats,id"],
-                custom_library_path=current_library_path
-            )
-            
-            books = json.loads(result.stdout)
-            
-            # Process and validate book data
-            processed_books = []
-            for book in books:
-                processed_book = self._process_book_data(book)
-                if processed_book:
-                    processed_books.append(processed_book)
-            
-            self.logger.info(f"Retrieved {len(processed_books)} books async")
-            return processed_books
-            
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to decode JSON from calibredb output: {e}")
-            raise CalibreServiceException(
-                "Invalid response from Calibre database",
-                error_code="INVALID_CALIBRE_RESPONSE"
-            )
-    
-    def _process_book_data(self, book: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Process and validate book data."""
-        try:
-            # Ensure required fields exist
-            if not all(key in book for key in ['id', 'title']):
-                self.logger.warning(f"Book missing required fields: {book}")
-                return None
-            
-            # Process authors
-            authors = book.get("authors", [])
-            if not isinstance(authors, list):
-                authors = [str(authors)] if authors else ["Unknown"]
-            else:
-                authors = [str(author) for author in authors if author]
-            
-            # Process formats
-            formats = book.get("formats", [])
-            if isinstance(formats, str):
-                formats = [formats]
-            elif not isinstance(formats, list):
-                formats = []
+            if format_files:
+                # Prefer epub, then mobi, then others
+                for preferred_format in ['epub', 'mobi', 'azw3', 'pdf']:
+                    if preferred_format in format_files:
+                        main_file_path = format_files[preferred_format]
+                        break
+                
+                if not main_file_path:
+                    main_file_path = list(format_files.values())[0]
+                
+                try:
+                    stat_info = os.stat(main_file_path)
+                    size = stat_info.st_size
+                    last_modified = stat_info.st_mtime
+                except OSError:
+                    pass
             
             return {
-                "id": int(book["id"]),
-                "title": str(book["title"]),
-                "authors": authors,
-                "formats": formats
+                'id': book_id,
+                'title': title,
+                'authors': [author_name],
+                'formats': formats,
+                'format_files': format_files,  # Additional info for file access
+                'size': size,
+                'last_modified': last_modified,
+                'path': main_file_path,
+                'cover_path': cover_path,
+                'book_directory': book_path
             }
             
-        except (ValueError, TypeError) as e:
-            self.logger.warning(f"Error processing book data {book}: {e}")
+        except Exception as e:
+            logger.error(f"Error extracting book data from {book_path}: {e}")
+            return None
+    
+    def _parse_opf_metadata(self, opf_path: str) -> Optional[Dict[str, Any]]:
+        """Parse OPF metadata file to extract book information."""
+        try:
+            tree = ET.parse(opf_path)
+            root = tree.getroot()
+            
+            # Define namespace
+            namespaces = {
+                'opf': 'http://www.idpf.org/2007/opf',
+                'dc': 'http://purl.org/dc/elements/1.1/'
+            }
+            
+            metadata = {}
+            
+            # Extract title
+            title_elem = root.find('.//dc:title', namespaces)
+            if title_elem is not None and title_elem.text:
+                metadata['title'] = title_elem.text.strip()
+            
+            # Extract authors
+            authors = []
+            for creator_elem in root.findall('.//dc:creator', namespaces):
+                if creator_elem.text:
+                    authors.append(creator_elem.text.strip())
+            if authors:
+                metadata['authors'] = authors
+            
+            # Extract other metadata
+            for field in ['publisher', 'language', 'description']:
+                elem = root.find(f'.//dc:{field}', namespaces)
+                if elem is not None and elem.text:
+                    metadata[field] = elem.text.strip()
+            
+            # Extract publication date
+            date_elem = root.find('.//dc:date', namespaces)
+            if date_elem is not None and date_elem.text:
+                metadata['published'] = date_elem.text.strip()
+            
+            # Extract identifiers (ISBN, etc.)
+            identifiers = {}
+            for identifier_elem in root.findall('.//dc:identifier', namespaces):
+                scheme = identifier_elem.get('scheme') or identifier_elem.get('{http://www.idpf.org/2007/opf}scheme')
+                if scheme and identifier_elem.text:
+                    identifiers[scheme.lower()] = identifier_elem.text.strip()
+            if identifiers:
+                metadata['identifiers'] = identifiers
+                if 'isbn' in identifiers:
+                    metadata['isbn'] = identifiers['isbn']
+            
+            return metadata
+            
+        except Exception as e:
+            logger.debug(f"Error parsing OPF file {opf_path}: {e}")
             return None
     
     def get_book_by_id(self, book_id: int) -> Optional[Dict[str, Any]]:
         """Get detailed information about a specific book."""
-        if book_id <= 0:
-            raise ValueError("Book ID must be positive")
-        
-        try:
-            result = self._run_calibredb(["list", "--for-machine", str(book_id)])
-            books = json.loads(result.stdout)
-            
-            if not books:
-                return None
-            
-            return self._process_book_data(books[0])
-            
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to decode JSON for book {book_id}: {e}")
-            raise CalibreServiceException(
-                "Invalid response from Calibre database",
-                error_code="INVALID_CALIBRE_RESPONSE"
-            )
+        books = self.get_books()
+        for book in books:
+            if book['id'] == book_id:
+                return book
+        return None
     
-    @cache_metadata(ttl=600)  # Cache for 10 minutes
-    def get_book_metadata(self, book_id: int) -> Optional[Dict[str, Any]]:
-        """Get book metadata with caching."""
-        if book_id <= 0:
-            raise ValueError("Book ID must be positive")
-        
-        self.logger.debug(f"Fetching metadata for book ID: {book_id}")
-        
-        try:
-            result = self._run_calibredb(["show_metadata", "--as-opf", str(book_id)])
-            
-            if not result.stdout.strip():
-                raise BookNotFoundException(book_id)
-            
-            # Parse OPF metadata - this is a simplified version
-            # In a real implementation, you'd parse the XML properly
-            return {
-                "id": book_id,
-                "opf_content": result.stdout
-            }
-            
-        except subprocess.CalledProcessError:
-            raise BookNotFoundException(book_id)
-    
-    def add_book(self, file_path: str, tags: Optional[List[str]] = None) -> Optional[int]:
-        """Add a book to the library with validation."""
-        file_path_obj = Path(file_path)
-        
-        if not file_path_obj.exists():
-            raise CalibreServiceException(
-                f"File not found: {file_path}",
-                error_code="FILE_NOT_FOUND"
-            )
-        
-        if not file_path_obj.is_file():
-            raise CalibreServiceException(
-                f"Path is not a file: {file_path}",
-                error_code="INVALID_FILE_PATH"
-            )
-        
-        # Check file extension
-        allowed_extensions = settings.allowed_extensions_list
-        if file_path_obj.suffix.lower() not in allowed_extensions:
-            raise CalibreServiceException(
-                f"File type not supported: {file_path_obj.suffix}",
-                error_code="UNSUPPORTED_FILE_TYPE"
-            )
-        
-        cmd = ["add", str(file_path_obj.absolute())]
-        
-        if tags:
-            cmd.extend(["--tags", ",".join(tags)])
-        
-        self.logger.info(f"Adding book: {file_path}")
-        
-        try:
-            result = self._run_calibredb(cmd, timeout=60)  # Longer timeout for file operations
-            
-            # Parse book ID from output
-            output = result.stdout.strip()
-            if "Added book ids:" in output:
-                id_part = output.split("Added book ids:")[1].split("\n")[0].strip()
-                if id_part.isdigit():
-                    book_id = int(id_part)
-                    self.logger.info(f"Successfully added book with ID: {book_id}")
-                    return book_id
-            
-            self.logger.warning(f"Could not parse book ID from output: {output}")
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"Failed to add book {file_path}: {e}")
-            raise CalibreServiceException(
-                f"Failed to add book: {str(e)}",
-                error_code="ADD_BOOK_FAILED"
-            )
-    
-    def remove_book(self, book_id: int) -> bool:
-        """Remove a book from the library."""
-        if book_id <= 0:
-            raise ValueError("Book ID must be positive")
-        
-        self.logger.info(f"Removing book ID: {book_id}")
-        
-        try:
-            self._run_calibredb(["remove", str(book_id)])
-            self.logger.info(f"Successfully removed book ID: {book_id}")
-            return True
-            
-        except CalibreCommandException:
-            # Book might not exist
-            raise BookNotFoundException(book_id)
-    
-    @cache_covers(ttl=3600)  # Cache for 1 hour
     def get_cover_path(self, book_id: int) -> Optional[str]:
-        """Get the path to a book's cover image."""
-        if book_id <= 0:
-            raise ValueError("Book ID must be positive")
+        """Get the path to a book's cover image - now directly from cover.jpg."""
+        book = self.get_book_by_id(book_id)
+        if book and book.get('cover_path') and os.path.exists(book['cover_path']):
+            return book['cover_path']
+        return None
+    
+    def get_book_file_path(self, book_id: int, format_type: Optional[str] = None) -> Optional[str]:
+        """Get the file path for a specific book format."""
+        book = self.get_book_by_id(book_id)
+        if not book:
+            return None
         
-        try:
-            # Search for cover files in the library directory
-            for root, dirs, files in self.library_path.rglob("*"):
-                if f"({book_id})" in root.name:
-                    for cover_name in ["cover.jpg", "cover.jpeg", "cover.png"]:
-                        cover_path = root / cover_name
-                        if cover_path.exists():
-                            self.logger.debug(f"Found cover for book {book_id}: {cover_path}")
-                            return str(cover_path)
+        format_files = book.get('format_files', {})
+        
+        if format_type:
+            # Return specific format if requested
+            return format_files.get(format_type.lower())
+        else:
+            # Return preferred format (epub > mobi > others)
+            for preferred_format in ['epub', 'mobi', 'azw3', 'pdf']:
+                if preferred_format in format_files:
+                    return format_files[preferred_format]
             
-            self.logger.debug(f"No cover found for book ID {book_id}")
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"Error finding cover for book {book_id}: {e}")
-            return None
+            # Return any available format
+            if format_files:
+                return list(format_files.values())[0]
+        
+        return None
     
     def search_books(self, query: str) -> List[Dict[str, Any]]:
-        """Search for books in the library."""
-        if not query.strip():
-            raise ValueError("Search query cannot be empty")
+        """Search for books by title or author."""
+        all_books = self.get_books()
+        query_lower = query.lower().strip()
         
-        self.logger.info(f"Searching books with query: {query}")
+        if not query_lower:
+            return all_books
         
-        try:
-            result = self._run_calibredb([
-                "list", "--for-machine", 
-                "--fields", "title,authors,formats,id", 
-                "--search", query
-            ])
+        matching_books = []
+        for book in all_books:
+            # Search in title
+            if query_lower in book.get('title', '').lower():
+                matching_books.append(book)
+                continue
             
-            books = json.loads(result.stdout)
-            processed_books = []
-            
-            for book in books:
-                processed_book = self._process_book_data(book)
-                if processed_book:
-                    processed_books.append(processed_book)
-            
-            self.logger.info(f"Found {len(processed_books)} books matching query")
-            return processed_books
-            
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to decode search results: {e}")
-            raise CalibreServiceException(
-                "Invalid search response",
-                error_code="INVALID_SEARCH_RESPONSE"
-            )
+            # Search in authors
+            authors = book.get('authors', [])
+            if any(query_lower in author.lower() for author in authors):
+                matching_books.append(book)
+                continue
+        
+        return matching_books
+    
+    def get_book_metadata_detailed(self, book_id: int) -> Optional[Dict[str, Any]]:
+        """Get detailed metadata for a book, including OPF data."""
+        book = self.get_book_by_id(book_id)
+        if not book:
+            return None
+        
+        # Start with basic book data
+        metadata = {
+            'id': book['id'],
+            'title': book.get('title'),
+            'authors': book.get('authors', []),
+            'formats': book.get('formats', [])
+        }
+        
+        # Try to get additional metadata from OPF file
+        book_directory = book.get('book_directory')
+        if book_directory:
+            opf_path = os.path.join(book_directory, 'metadata.opf')
+            if os.path.exists(opf_path):
+                opf_metadata = self._parse_opf_metadata(opf_path)
+                if opf_metadata:
+                    metadata.update(opf_metadata)
+        
+        return metadata
+    
 
 
-# Dependency injection function
+
+
+# Create a singleton instance
 @lru_cache()
 def get_calibre_service_enhanced() -> CalibreServiceEnhanced:
-    """Get enhanced Calibre service instance with caching."""
-    # Get the first library path from LIBRARY_PATHS
+    """Get a CalibreServiceEnhanced instance configured with settings."""
+    if not hasattr(settings, 'LIBRARY_PATHS') or not settings.LIBRARY_PATHS:
+        logger.critical("LIBRARY_PATHS is not configured in settings.")
+        raise ValueError("LIBRARY_PATHS must be set in configuration.")
+
+    # Get the first library path from the comma-separated list
     library_paths = [path.strip() for path in settings.LIBRARY_PATHS.split(',') if path.strip()]
-    primary_library_path = library_paths[0] if library_paths else ""
-    return CalibreServiceEnhanced(primary_library_path)
+    if not library_paths:
+        logger.critical("No valid library paths found in LIBRARY_PATHS.")
+        raise ValueError("At least one library path must be configured.")
+    
+    primary_library_path = library_paths[0]
+
+    if not os.path.isdir(primary_library_path):
+        logger.warning(f"Library path '{primary_library_path}' does not exist or is not a directory.")
+
+    return CalibreServiceEnhanced(library_path=primary_library_path)

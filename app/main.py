@@ -22,7 +22,7 @@ from app.config import settings
 from app.exceptions import CalibreAPIException
 from app.middleware import setup_middleware
 from app.models import ErrorResponse, HealthCheckResponse
-from app.routers import books
+from app.routers import books_enhanced
 from app.utils.logging import setup_logging, get_logger
 
 
@@ -72,9 +72,8 @@ def create_application() -> FastAPI:
     # Setup exception handlers
     setup_exception_handlers(app)
     
-    # Include routers
-    app.include_router(books.router)  # Keep old paths working
-    app.include_router(books.router, prefix="/api/v1")  # Versioned paths
+    # Include routers - using enhanced version with Calibre directory structure
+    app.include_router(books_enhanced.router, prefix="/api/v1")  # Enhanced version
     
     # Add root endpoints
     setup_root_endpoints(app)
@@ -141,10 +140,10 @@ def setup_root_endpoints(app: FastAPI) -> None:
     @app.get("/health", response_model=HealthCheckResponse)
     async def health_check():
         """Health check endpoint."""
-        from app.services.calibre_service import get_calibre_service
+        from app.services.calibre_service_enhanced import get_calibre_service_enhanced
         
         try:
-            calibre_service = get_calibre_service()
+            calibre_service = get_calibre_service_enhanced()
             # Try to access Calibre to verify it's working
             calibre_service.get_books()  # This will raise an exception if Calibre is not available
             calibre_available = True

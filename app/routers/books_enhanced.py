@@ -23,7 +23,7 @@ from ..models import (
     AddBookResponse,
     DeleteBookResponse
 )
-from ..services.calibre_service import CalibreService, get_calibre_service
+from ..services.calibre_service_enhanced import CalibreServiceEnhanced, get_calibre_service_enhanced
 from ..utils.logging import get_logger
 
 router = APIRouter(tags=["books"], prefix="/books")
@@ -57,7 +57,7 @@ async def validate_file_upload(file: UploadFile) -> None:
 
 async def get_books_async(
     location_id: str = "calibre",
-    calibre_service: CalibreService = Depends(get_calibre_service)
+    calibre_service: CalibreServiceEnhanced = Depends(get_calibre_service_enhanced)
 ) -> List[dict]:
     """Get books asynchronously."""
     loop = asyncio.get_event_loop()
@@ -77,7 +77,7 @@ async def get_books_async(
 @router.get("/libraries/{location_id}/books", response_model=BookCollection)
 async def list_books(
     location_id: str,
-    calibre_service: CalibreService = Depends(get_calibre_service)
+    calibre_service: CalibreServiceEnhanced = Depends(get_calibre_service_enhanced)
 ):
     """Get all books from the specified library."""
     logger.info(f"Retrieving books from location: {location_id}")
@@ -95,25 +95,11 @@ async def list_books(
         else:
             authors = ["Unknown"]
 
-        # Process formats
-        formats = []
-        path = None
-        size = None
-        last_modified = None
-
-        for fmt in book.get("formats", []):
-            try:
-                ext = os.path.splitext(fmt)[1].lstrip('.').lower()
-                if ext:
-                    formats.append(ext)
-
-                if path is None and os.path.exists(fmt):
-                    path = fmt
-                    stat = os.stat(fmt)
-                    size = stat.st_size
-                    last_modified = stat.st_mtime
-            except (AttributeError, IndexError, FileNotFoundError):
-                continue
+        # Get data directly from enhanced service - much cleaner!
+        formats = book.get("formats", [])
+        path = book.get("path")
+        size = book.get("size")
+        last_modified = book.get("last_modified")
 
         books.append({
             "id": book["id"],
@@ -132,7 +118,7 @@ async def list_books(
 @router.get("/{book_id}/metadata", response_model=BookMetadataResponse)
 async def get_book_metadata(
     book_id: int,
-    calibre_service: CalibreService = Depends(get_calibre_service)
+    calibre_service: CalibreServiceEnhanced = Depends(get_calibre_service_enhanced)
 ):
     """Get detailed metadata for a book."""
     if book_id <= 0:
@@ -142,7 +128,7 @@ async def get_book_metadata(
     
     loop = asyncio.get_event_loop()
     try:
-        metadata = await loop.run_in_executor(None, calibre_service.get_book_metadata, book_id)
+        metadata = await loop.run_in_executor(None, calibre_service.get_book_metadata_detailed, book_id)
         if not metadata:
             raise BookNotFoundException(book_id)
         
@@ -171,7 +157,7 @@ async def add_book(
     series_index: Optional[float] = Form(None),
     comments: Optional[str] = Form(None),
     tags: Optional[str] = Form(None),
-    calibre_service: CalibreService = Depends(get_calibre_service)
+    calibre_service: CalibreServiceEnhanced = Depends(get_calibre_service_enhanced)
 ):
     """Add a new book to the Calibre library."""
     logger.info(f"Adding new book: {file.filename}")
@@ -237,7 +223,7 @@ async def add_book(
 async def delete_book(
     book_id: int,
     background_tasks: BackgroundTasks,
-    calibre_service: CalibreService = Depends(get_calibre_service)
+    calibre_service: CalibreServiceEnhanced = Depends(get_calibre_service_enhanced)
 ):
     """Delete a book from the Calibre library."""
     if book_id <= 0:
@@ -272,9 +258,9 @@ async def delete_book(
 @router.get("/{book_id}/cover")
 async def get_book_cover(
     book_id: int,
-    calibre_service: CalibreService = Depends(get_calibre_service)
+    calibre_service: CalibreServiceEnhanced = Depends(get_calibre_service_enhanced)
 ):
-    """Get the cover image for a book."""
+    """Get the cover image for a book - now directly from cover.jpg."""
     if book_id <= 0:
         raise ValidationException("Book ID must be positive", field="book_id")
     
@@ -298,3 +284,79 @@ async def get_book_cover(
         if isinstance(e, BookNotFoundException):
             raise
         raise CalibreServiceException(f"Failed to retrieve cover: {str(e)}")
+
+
+@router.get("/search")
+async def search_books(
+    q: str,
+    calibre_service: CalibreServiceEnhanced = Depends(get_calibre_service_enhanced)
+):
+    """Search books in the library."""
+    if not q.strip():
+        raise ValidationException("Search query cannot be empty", field="q")
+    
+    logger.info(f"Searching books with query: {q}")
+    
+    loop = asyncio.get_event_loop()
+    try:
+        books_data = await loop.run_in_executor(None, calibre_service.search_books, q)
+        
+        books = []
+        for book in books_data:
+            books.append({
+                "id": book["id"],
+                "title": book["title"],
+                "authors": book["authors"],
+                "formats": book["formats"],
+                "size": book.get("size"),
+                "last_modified": book.get("last_modified"),
+                "path": book.get("path")
+            })
+        
+        return BookCollection(books=books, total=len(books))
+    except Exception as e:
+        logger.error(f"Error searching books: {e}")
+        raise CalibreServiceException(f"Failed to search books: {str(e)}")
+
+
+@router.get("/{book_id}/download")
+async def download_book(
+    book_id: int,
+    format: Optional[str] = None,
+    calibre_service: CalibreServiceEnhanced = Depends(get_calibre_service_enhanced)
+):
+    """Download a book file in the specified format."""
+    if book_id <= 0:
+        raise ValidationException("Book ID must be positive", field="book_id")
+    
+    logger.info(f"Downloading book ID: {book_id}, format: {format}")
+    
+    loop = asyncio.get_event_loop()
+    try:
+        # Get book data and file path
+        book = await loop.run_in_executor(None, calibre_service.get_book_by_id, book_id)
+        if not book:
+            raise BookNotFoundException(book_id)
+        
+        file_path = await loop.run_in_executor(None, calibre_service.get_book_file_path, book_id, format)
+        
+        if not file_path or not os.path.exists(file_path):
+            available_formats = book.get('formats', [])
+            raise CalibreServiceException(
+                f"Format '{format}' not available for book {book_id}. Available formats: {available_formats}"
+            )
+        
+        # Use the actual filename for download
+        filename = os.path.basename(file_path)
+        
+        return FileResponse(
+            path=file_path,
+            filename=filename,
+            media_type='application/octet-stream'
+        )
+        
+    except Exception as e:
+        logger.error(f"Error downloading book {book_id}: {e}")
+        if isinstance(e, (BookNotFoundException, CalibreServiceException)):
+            raise
+        raise CalibreServiceException(f"Failed to download book: {str(e)}")
