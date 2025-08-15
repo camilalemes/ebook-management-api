@@ -21,12 +21,14 @@ from ..models import (
     BookMetadataResponse,
     AddBookRequest,
     AddBookResponse,
-    DeleteBookResponse
+    DeleteBookResponse,
+    LibrariesResponse,
+    Library
 )
 from ..services.calibre_service_enhanced import CalibreServiceEnhanced, get_calibre_service_enhanced
 from ..utils.logging import get_logger
 
-router = APIRouter(tags=["books"], prefix="/books")
+router = APIRouter(tags=["books"])
 logger = get_logger(__name__)
 
 
@@ -55,38 +57,125 @@ async def validate_file_upload(file: UploadFile) -> None:
         )
 
 
-async def get_books_async(
-    location_id: str = "calibre",
-    calibre_service: CalibreServiceEnhanced = Depends(get_calibre_service_enhanced)
-) -> List[dict]:
+async def get_books_async(location_id: str = "calibre") -> List[dict]:
     """Get books asynchronously."""
     loop = asyncio.get_event_loop()
     
-    if location_id == "calibre":
+    # Get library paths from settings
+    library_paths = settings.library_paths_list
+    
+    # Determine which library path to use based on location_id
+    library_path = None
+    if location_id == "calibre" and library_paths:
+        library_path = library_paths[0]  # Main library
+    elif location_id.startswith("library-") and library_paths:
         try:
-            # Run the synchronous operation in a thread pool
-            books_data = await loop.run_in_executor(None, calibre_service.get_books)
-            return books_data
-        except Exception as e:
-            logger.error(f"Error retrieving Calibre books: {e}")
-            raise CalibreServiceException(f"Failed to retrieve books: {str(e)}")
-    else:
+            index = int(location_id.split("-")[1]) - 1
+            if 0 <= index < len(library_paths):
+                library_path = library_paths[index]
+        except (ValueError, IndexError):
+            pass
+    
+    if not library_path:
         raise ValidationException(f"Location '{location_id}' not supported", field="location_id")
+    
+    try:
+        # Create a service instance for this specific library path
+        calibre_service = CalibreServiceEnhanced(library_path=library_path)
+        # Run the synchronous operation in a thread pool
+        books_data = await loop.run_in_executor(None, calibre_service.get_books)
+        return books_data
+    except Exception as e:
+        logger.error(f"Error retrieving books from {library_path}: {e}")
+        raise CalibreServiceException(f"Failed to retrieve books: {str(e)}")
+
+
+@router.get("/libraries", response_model=LibrariesResponse)
+async def get_available_libraries():
+    """Get list of available library locations."""
+    try:
+        libraries = []
+        
+        # Get library paths from settings
+        library_paths = settings.library_paths_list
+        
+        for i, path in enumerate(library_paths):
+            # Create library ID based on position or path
+            if i == 0:
+                lib_id = "calibre"
+                lib_name = "Main Library"
+                lib_desc = "Primary ebook collection"
+            else:
+                lib_id = f"library-{i+1}"
+                lib_name = f"Library {i+1}"
+                lib_desc = f"Additional ebook collection at {path}"
+            
+            libraries.append(Library(
+                id=lib_id,
+                name=lib_name,
+                path=path,
+                description=lib_desc
+            ))
+        
+        return LibrariesResponse(libraries=libraries)
+    
+    except Exception as e:
+        logger.error(f"Error getting available libraries: {e}")
+        raise CalibreServiceException(f"Failed to get libraries: {str(e)}")
 
 
 @router.get("/libraries/{location_id}/books", response_model=BookCollection)
 async def list_books(
     location_id: str,
-    calibre_service: CalibreServiceEnhanced = Depends(get_calibre_service_enhanced)
+    page: int = 1,
+    page_size: int = 50,
+    search: Optional[str] = None,
+    tag: Optional[str] = None
 ):
-    """Get all books from the specified library."""
-    logger.info(f"Retrieving books from location: {location_id}")
+    """Get all books from the specified library with pagination, search, and tag filtering."""
+    logger.info(f"Retrieving books from location: {location_id}, page: {page}, page_size: {page_size}, search: {search}, tag: {tag}")
     
-    books_data = await get_books_async(location_id, calibre_service)
+    books_data = await get_books_async(location_id)
+    
+    # Apply search filter if provided
+    if search and search.strip():
+        search_term = search.strip().lower()
+        filtered_books = []
+        for book in books_data:
+            # Search in title and authors
+            title_match = search_term in book.get("title", "").lower()
+            authors_match = False
+            if isinstance(book.get("authors"), list):
+                authors_match = any(search_term in author.lower() for author in book.get("authors", []))
+            elif isinstance(book.get("authors"), str):
+                authors_match = search_term in book.get("authors", "").lower()
+            
+            if title_match or authors_match:
+                filtered_books.append(book)
+        books_data = filtered_books
+    
+    # Apply tag filter if provided
+    if tag and tag.strip():
+        tag_filter = tag.strip().lower()
+        filtered_books = []
+        for book in books_data:
+            book_tags = book.get("tags", [])
+            if isinstance(book_tags, list):
+                # Check if any of the book's tags match the filter (case-insensitive)
+                if any(tag_filter in book_tag.lower() for book_tag in book_tags):
+                    filtered_books.append(book)
+        books_data = filtered_books
+    
+    total_books = len(books_data)
+    
+    # Apply pagination
+    start_index = (page - 1) * page_size
+    end_index = start_index + page_size
+    paginated_books = books_data[start_index:end_index]
     
     # Process books data (simplified version)
     books = []
-    for book in books_data:
+    for book in paginated_books:
         # Handle authors correctly
         if isinstance(book.get("authors"), str):
             authors = [book.get("authors")]
@@ -100,6 +189,7 @@ async def list_books(
         path = book.get("path")
         size = book.get("size")
         last_modified = book.get("last_modified")
+        tags = book.get("tags", [])
 
         books.append({
             "id": book["id"],
@@ -108,14 +198,22 @@ async def list_books(
             "formats": formats,
             "size": size,
             "last_modified": last_modified,
-            "path": path
+            "path": path,
+            "tags": tags
         })
 
-    logger.info(f"Retrieved {len(books)} books from {location_id}")
-    return BookCollection(books=books, total=len(books))
+    total_pages = max(1, (total_books + page_size - 1) // page_size) if total_books > 0 else 1
+    logger.info(f"Retrieved {len(books)} books from {location_id} (page {page}/{total_pages}, total: {total_books})")
+    return BookCollection(
+        books=books, 
+        total=total_books,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages
+    )
 
 
-@router.get("/{book_id}/metadata", response_model=BookMetadataResponse)
+@router.get("/books/{book_id}/metadata", response_model=BookMetadataResponse)
 async def get_book_metadata(
     book_id: int,
     calibre_service: CalibreServiceEnhanced = Depends(get_calibre_service_enhanced)
@@ -143,7 +241,7 @@ async def get_book_metadata(
         raise CalibreServiceException(f"Failed to retrieve metadata: {str(e)}")
 
 
-@router.post("/add", response_model=AddBookResponse)
+@router.post("/books/add", response_model=AddBookResponse)
 async def add_book(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -219,7 +317,7 @@ async def add_book(
                 logger.warning(f"Failed to clean up temporary file {temp_file_path}: {e}")
 
 
-@router.delete("/{book_id}", response_model=DeleteBookResponse)
+@router.delete("/books/{book_id}", response_model=DeleteBookResponse)
 async def delete_book(
     book_id: int,
     background_tasks: BackgroundTasks,
@@ -255,7 +353,7 @@ async def delete_book(
         raise CalibreServiceException(f"Failed to delete book: {str(e)}")
 
 
-@router.get("/{book_id}/cover")
+@router.get("/books/{book_id}/cover")
 async def get_book_cover(
     book_id: int,
     calibre_service: CalibreServiceEnhanced = Depends(get_calibre_service_enhanced)
@@ -286,7 +384,7 @@ async def get_book_cover(
         raise CalibreServiceException(f"Failed to retrieve cover: {str(e)}")
 
 
-@router.get("/search")
+@router.get("/books/search")
 async def search_books(
     q: str,
     calibre_service: CalibreServiceEnhanced = Depends(get_calibre_service_enhanced)
@@ -319,7 +417,9 @@ async def search_books(
         raise CalibreServiceException(f"Failed to search books: {str(e)}")
 
 
-@router.get("/{book_id}/download")
+
+
+@router.get("/books/{book_id}/download")
 async def download_book(
     book_id: int,
     format: Optional[str] = None,

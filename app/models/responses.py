@@ -63,6 +63,7 @@ class Book(BaseModel):
     size: Optional[int] = Field(default=None, ge=0, description="File size in bytes")
     last_modified: Optional[float] = Field(default=None, description="Last modification timestamp")
     path: Optional[str] = Field(default=None, description="File path")
+    tags: List[str] = Field(default_factory=list, description="Book tags/subjects")
 
     @computed_field
     @property
@@ -98,12 +99,10 @@ class BookCollection(BaseResponse):
     """Response model for book collections."""
     
     books: List[Book] = Field(description="List of books")
-    total: int = Field(ge=0, description="Total number of books")
-    
-    def model_post_init(self, __context: Any) -> None:
-        """Ensure total matches the actual book count."""
-        if self.total != len(self.books):
-            self.total = len(self.books)
+    total: int = Field(ge=0, description="Total number of books across all pages")
+    page: int = Field(ge=1, default=1, description="Current page number")
+    page_size: int = Field(ge=1, default=50, description="Number of books per page")
+    total_pages: int = Field(ge=1, default=1, description="Total number of pages")
 
 
 class BookMetadataResponse(BaseResponse):
@@ -225,3 +224,20 @@ class HealthCheckResponse(BaseResponse):
     calibre_available: bool = Field(description="Whether Calibre is available")
     library_accessible: bool = Field(description="Whether library is accessible")
     library_count: int = Field(ge=0, description="Number of configured libraries")
+
+
+class Library(BaseModel):
+    """Library model for available libraries."""
+    
+    model_config = ConfigDict(extra="forbid")
+    
+    id: str = Field(description="Library identifier")
+    name: str = Field(description="Library display name")
+    path: str = Field(description="Library path")
+    description: Optional[str] = Field(default=None, description="Library description")
+
+
+class LibrariesResponse(BaseResponse):
+    """Response model for available libraries."""
+    
+    libraries: List[Library] = Field(description="List of available libraries")

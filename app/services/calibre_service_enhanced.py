@@ -93,6 +93,7 @@ class CalibreServiceEnhanced:
                 title = book_dir.rsplit('(', 1)[0].strip()
             
             # Check for metadata.opf file
+            tags = []
             metadata_path = os.path.join(book_path, 'metadata.opf')
             if os.path.exists(metadata_path):
                 try:
@@ -100,6 +101,7 @@ class CalibreServiceEnhanced:
                     if metadata:
                         title = metadata.get('title', title)
                         author_name = metadata.get('authors', [author_name])[0] if metadata.get('authors') else author_name
+                        tags = metadata.get('tags', [])
                 except Exception as e:
                     logger.debug(f"Could not parse metadata.opf for {book_dir}: {e}")
             
@@ -168,7 +170,8 @@ class CalibreServiceEnhanced:
                 'last_modified': last_modified,
                 'path': main_file_path,
                 'cover_path': cover_path,
-                'book_directory': book_path
+                'book_directory': book_path,
+                'tags': tags
             }
             
         except Exception as e:
@@ -223,6 +226,14 @@ class CalibreServiceEnhanced:
                 metadata['identifiers'] = identifiers
                 if 'isbn' in identifiers:
                     metadata['isbn'] = identifiers['isbn']
+            
+            # Extract tags/subjects
+            tags = []
+            for subject_elem in root.findall('.//dc:subject', namespaces):
+                if subject_elem.text:
+                    tags.append(subject_elem.text.strip())
+            if tags:
+                metadata['tags'] = tags
             
             return metadata
             

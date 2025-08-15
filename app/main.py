@@ -75,6 +75,20 @@ def create_application() -> FastAPI:
     # Include routers - using enhanced version with Calibre directory structure
     app.include_router(books_enhanced.router, prefix="/api/v1")  # Enhanced version
     
+    # Add libraries endpoint
+    @app.get("/api/v1/libraries")
+    async def get_available_libraries():
+        """Get list of available libraries."""
+        return {
+            "libraries": [
+                {
+                    "id": "calibre",
+                    "name": "Calibre Library",
+                    "description": "Main Calibre library with preserved directory structure"
+                }
+            ]
+        }
+    
     # Add root endpoints
     setup_root_endpoints(app)
     

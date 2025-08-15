@@ -15,7 +15,9 @@ from .responses import (
     SyncStatusResponse,
     ReplicaComparison,
     ComparisonResponse,
-    HealthCheckResponse
+    HealthCheckResponse,
+    Library,
+    LibrariesResponse
 )
 
 __all__ = [
@@ -33,5 +35,7 @@ __all__ = [
     "SyncStatusResponse",
     "ReplicaComparison",
     "ComparisonResponse",
-    "HealthCheckResponse"
+    "HealthCheckResponse",
+    "Library",
+    "LibrariesResponse"
 ]
