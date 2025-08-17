@@ -5,10 +5,13 @@ Reads directly from Calibre's metadata.db SQLite database for optimal performanc
 import sqlite3
 import os
 import logging
+import re
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
+from html import unescape
 
 logger = logging.getLogger("calibre_db_service")
+logger.setLevel(logging.DEBUG)
 
 
 class CalibreDbService:
@@ -46,6 +49,41 @@ class CalibreDbService:
         
         return conn
     
+    def _sanitize_description(self, description: str) -> str:
+        """
+        Sanitize book description by removing HTML tags and cleaning up formatting.
+        
+        Args:
+            description: Raw HTML description from Calibre
+            
+        Returns:
+            Clean text description
+        """
+        if not description:
+            return None
+        
+        logger.debug(f"Sanitizing description (first 100 chars): {description[:100]}")
+            
+        # Remove HTML/XML tags
+        clean_text = re.sub(r'<[^>]+>', '', description)
+        
+        # Decode HTML entities
+        clean_text = unescape(clean_text)
+        
+        # Remove excessive whitespace and normalize line breaks
+        clean_text = re.sub(r'\s+', ' ', clean_text)
+        clean_text = re.sub(r'\n\s*\n', '\n\n', clean_text)
+        
+        # Remove leading/trailing whitespace
+        clean_text = clean_text.strip()
+        
+        # Remove empty paragraphs and excessive line breaks
+        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
+        
+        logger.debug(f"Sanitized result (first 100 chars): {clean_text[:100] if clean_text else 'None'}")
+        
+        return clean_text if clean_text else None
+
     def _is_network_path(self) -> bool:
         """Check if the database is on a network mount."""
         return "/mnt/" in self.library_path or "192.168" in self.library_path
@@ -72,13 +110,13 @@ class CalibreDbService:
                     b.path,
                     b.uuid,
                     b.has_cover,
-                    GROUP_CONCAT(a.name, ' & ') as authors,
+                    GROUP_CONCAT(DISTINCT a.name) as authors,
                     s.name as series_name,
                     p.name as publisher,
                     c.text as comments,
                     r.rating,
-                    GROUP_CONCAT(t.name) as tags,
-                    GROUP_CONCAT(UPPER(d.format)) as formats
+                    GROUP_CONCAT(DISTINCT t.name) as tags,
+                    GROUP_CONCAT(DISTINCT UPPER(d.format)) as formats
                 FROM books b
                 LEFT JOIN books_authors_link bal ON b.id = bal.book
                 LEFT JOIN authors a ON bal.author = a.id
@@ -151,20 +189,18 @@ class CalibreDbService:
                     if os.path.exists(cover_file):
                         cover_path = cover_file
                 
-                # Parse formats
-                formats = []
-                if row['formats']:
-                    formats = [fmt.strip() for fmt in row['formats'].split(',') if fmt.strip()]
+                # Get detailed format information with file sizes
+                formats = self._get_book_formats(row['id'])
                 
                 # Parse tags
                 tags = []
                 if row['tags']:
                     tags = [tag.strip() for tag in row['tags'].split(',') if tag.strip()]
                 
-                # Parse authors
+                # Parse authors (now comma-separated due to DISTINCT)
                 authors = []
                 if row['authors']:
-                    authors = [author.strip() for author in row['authors'].split(' & ') if author.strip()]
+                    authors = [author.strip() for author in row['authors'].split(',') if author.strip()]
                 
                 book = {
                     'id': row['id'],
@@ -173,7 +209,7 @@ class CalibreDbService:
                     'series_name': row['series_name'],
                     'series_index': row['series_index'],
                     'publisher': row['publisher'],
-                    'comments': row['comments'],
+                    'comments': self._sanitize_description(row['comments']),
                     'rating': row['rating'],
                     'tags': tags,
                     'formats': formats,
@@ -187,6 +223,31 @@ class CalibreDbService:
                 books.append(book)
             
             return books, total_count
+    
+    def _get_book_formats(self, book_id: int) -> List[Dict[str, Any]]:
+        """Get detailed format information for a book including file sizes."""
+        with self._get_connection() as conn:
+            query = """
+                SELECT 
+                    d.format,
+                    d.uncompressed_size,
+                    d.name
+                FROM data d
+                WHERE d.book = ?
+                ORDER BY d.format
+            """
+            cursor = conn.execute(query, (book_id,))
+            formats = []
+            
+            for row in cursor:
+                format_info = {
+                    'format': row['format'].upper(),
+                    'file_size': row['uncompressed_size'],
+                    'filename': row['name']
+                }
+                formats.append(format_info)
+            
+            return formats
     
     def get_book_by_id(self, book_id: int) -> Optional[Dict[str, Any]]:
         """Get detailed information about a specific book."""
@@ -206,13 +267,13 @@ class CalibreDbService:
                     b.path,
                     b.uuid,
                     b.has_cover,
-                    GROUP_CONCAT(a.name, ' & ') as authors,
+                    GROUP_CONCAT(DISTINCT a.name) as authors,
                     s.name as series_name,
                     p.name as publisher,
                     c.text as comments,
                     r.rating,
-                    GROUP_CONCAT(t.name) as tags,
-                    GROUP_CONCAT(UPPER(d.format)) as formats
+                    GROUP_CONCAT(DISTINCT t.name) as tags,
+                    GROUP_CONCAT(DISTINCT UPPER(d.format)) as formats
                 FROM books b
                 LEFT JOIN books_authors_link bal ON b.id = bal.book
                 LEFT JOIN authors a ON bal.author = a.id
@@ -242,10 +303,8 @@ class CalibreDbService:
                 if os.path.exists(cover_file):
                     cover_path = cover_file
             
-            # Parse formats
-            formats = []
-            if row['formats']:
-                formats = [fmt.strip() for fmt in row['formats'].split(',') if fmt.strip()]
+            # Get detailed format information
+            formats = self._get_book_formats(row['id'])
             
             # Parse tags
             tags = []
@@ -264,7 +323,7 @@ class CalibreDbService:
                 'series_name': row['series_name'],
                 'series_index': row['series_index'],
                 'publisher': row['publisher'],
-                'comments': row['comments'],
+                'comments': self._sanitize_description(row['comments']),
                 'rating': row['rating'],
                 'tags': tags,
                 'formats': formats,

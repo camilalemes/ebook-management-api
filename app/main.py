@@ -22,7 +22,7 @@ from app.config import settings
 from app.exceptions import CalibreAPIException
 from app.middleware import setup_middleware
 from app.models import ErrorResponse, HealthCheckResponse
-from app.routers import books_enhanced
+from app.routers import books
 from app.utils.logging import setup_logging, get_logger
 
 
@@ -73,7 +73,7 @@ def create_application() -> FastAPI:
     setup_exception_handlers(app)
     
     # Include routers - using optimized database-direct version  
-    app.include_router(books_enhanced.router, prefix="/api/v1")
+    app.include_router(books.router, prefix="/api/v1")
     
     # Add root endpoints
     setup_root_endpoints(app)
@@ -140,26 +140,43 @@ def setup_root_endpoints(app: FastAPI) -> None:
     @app.get("/health", response_model=HealthCheckResponse)
     async def health_check():
         """Health check endpoint."""
-        from app.services.calibre_service_enhanced import get_calibre_service_enhanced
+        from app.services.calibre_db_service import CalibreDbService
         
         try:
-            calibre_service = get_calibre_service_enhanced()
-            # Try to access Calibre to verify it's working
-            calibre_service.get_books()  # This will raise an exception if Calibre is not available
+            # Test each configured library
             calibre_available = True
             library_accessible = True
+            accessible_libraries = 0
+            
+            for library_path in settings.library_paths_list:
+                try:
+                    db_service = CalibreDbService(library_path)
+                    # Try to get a small sample of books to verify database access
+                    books, _ = db_service.get_books_paginated(offset=0, limit=1)
+                    accessible_libraries += 1
+                except Exception as lib_error:
+                    logger = get_logger(__name__)
+                    logger.warning(f"Library at {library_path} not accessible: {lib_error}")
+                    library_accessible = False
+            
+            # If no libraries are accessible, mark Calibre as unavailable
+            if accessible_libraries == 0:
+                calibre_available = False
+                library_accessible = False
+                
         except Exception as e:
             logger = get_logger(__name__)
             logger.warning(f"Health check failed: {e}")
             calibre_available = False
             library_accessible = False
+            accessible_libraries = 0
         
         return HealthCheckResponse(
             message="API is running",
             version=settings.API_VERSION,
             calibre_available=calibre_available,
             library_accessible=library_accessible,
-            library_count=len(settings.library_paths_list)
+            library_count=accessible_libraries if library_accessible else len(settings.library_paths_list)
         )
 
 
