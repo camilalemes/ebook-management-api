@@ -88,9 +88,9 @@ async def get_available_libraries():
             # Determine library name based on path
             library_name = f"Library {i + 1}"
             if "Books" in library_path:
-                library_name = "Main Library"
+                library_name = "Misty Library"
             elif "NAS" in library_path or "192.168" in library_path:
-                library_name = "NAS Library"
+                library_name = "Lemoes Library"
             
             libraries.append(LibraryInfo(
                 id=f"library{i + 1}",
