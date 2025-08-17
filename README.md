@@ -5,12 +5,13 @@ A comprehensive FastAPI-based system for managing Calibre ebook libraries with i
 ## ✨ Features
 
 ### Core Functionality
-- **📖 Library Management**: Browse, search, and manage your Calibre ebook collection
-- **🔄 Intelligent Sync**: Automated synchronization to multiple replica locations with change detection
-- **📱 Multi-Device Support**: Access your library from anywhere via your homelab
-- **☁️ OneDrive Integration**: Sync with OneDrive-hosted Calibre libraries
-- **🏠 NAS Support**: Primary storage on Network Attached Storage for reliability
-- **🔍 Library Comparison**: Compare main library with replicas to find differences
+- **📖 Multi-Library Support**: Browse multiple Calibre libraries simultaneously
+- **⚡ Direct Database Access**: Optimized performance with direct SQLite metadata.db access
+- **🌐 Network Library Support**: SMB/NFS mounted libraries with network optimizations
+- **🔍 Advanced Search & Filtering**: Search by title, author, or filter by tags
+- **📄 Pagination**: Efficient browsing with configurable page sizes
+- **📱 Multi-Device Access**: RESTful API accessible from any device
+- **🏷️ Tag Management**: Extract and filter by metadata tags
 
 ### Smart Organization
 - **📝 Metadata-Based Renaming**: Files renamed using "Title - Author.ext" format from Calibre metadata
@@ -73,19 +74,21 @@ A comprehensive FastAPI-based system for managing Calibre ebook libraries with i
 ### Environment Variables
 
 ```env
-# Calibre Library Configuration
-CALIBRE_LIBRARY_PATH=/path/to/calibre/library
-REPLICA_PATHS=/path/to/replica1,/path/to/replica2
-CALIBRE_CMD_PATH=calibredb
+# Library Configuration - Multiple libraries supported
+LIBRARY_PATHS=/path/to/library1,/path/to/library2
+# Example: LIBRARY_PATHS=/home/user/Books/CalibreReplica,/home/user/mnt/remote-books
 
 # API Configuration
 API_HOST=0.0.0.0
 API_PORT=8000
+API_VERSION=1.0.0
 API_DEBUG=false
 
-# Logging
+# Logging Configuration
 LOG_LEVEL=INFO
 LOG_FILE=/app/logs/app.log
+LOG_ROTATION_SIZE=10485760
+LOG_BACKUP_COUNT=5
 ```
 
 ### Storage Options
@@ -97,20 +100,18 @@ LOG_FILE=/app/logs/app.log
 ## 🚀 API Endpoints
 
 ### Books Management
-- `GET /books` - List all books (alphabetically sorted)
-- `GET /books/{book_id}` - Get specific book details
-- `POST /books/add` - Add new book with file upload
-- `DELETE /books/{book_id}` - Remove book from library
-- `GET /books/{book_id}/cover` - Get book cover image
+- `GET /libraries` - List available library locations
+- `GET /libraries/{library_id}/books` - List books with pagination and search
+- `GET /books/{book_id}/metadata` - Get detailed book metadata
+- `GET /libraries/{library_id}/books/{book_id}/cover` - Get book cover image
+- `GET /books/{book_id}/download` - Download book in preferred format
+- `GET /books/search` - Search books by title or author
 
-### Synchronization
-- `POST /sync/trigger` - Start sync process
-- `POST /sync/dry-run` - Test sync without changes  
-- `GET /sync/status` - Check sync status and results
-
-### Library Comparison
-- `POST /comparison/compare` - Compare library with replicas
-- `GET /comparison/results` - Get comparison results
+### Query Parameters
+- `page` - Page number for pagination (default: 1)
+- `page_size` - Items per page (default: 50, max: 200)
+- `search` - Search term for filtering by title/author
+- `tag_filter` - Filter books by specific tag (e.g., 'mistyebook')
 
 ### System
 - `GET /health` - Health check endpoint
@@ -147,13 +148,14 @@ ebook-management-api/
 │   ├── main.py              # FastAPI application
 │   ├── config.py            # Configuration management
 │   ├── routers/             # API endpoints
-│   │   ├── books.py         # Book management
-│   │   ├── sync.py          # Synchronization
-│   │   └── comparison.py    # Library comparison
+│   │   └── books_enhanced.py # Optimized book management with direct DB access
 │   ├── services/            # Business logic
-│   │   ├── calibre_service.py
-│   │   └── sync_service.py
-│   └── models/              # Data models
+│   │   ├── calibre_db_service.py  # Direct SQLite database service
+│   │   └── library_service.py     # Multi-library management
+│   ├── models/              # Pydantic data models
+│   ├── middleware/          # Custom middleware
+│   ├── exceptions/          # Custom exceptions
+│   └── utils/               # Utilities (logging, etc.)
 ├── Dockerfile               # Container configuration
 ├── docker-compose*.yml      # Container orchestration
 ├── requirements.txt         # Python dependencies
