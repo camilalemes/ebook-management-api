@@ -438,3 +438,33 @@ async def get_library_stats(library_id: str):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting stats: {str(e)}")
+
+
+@router.get("/libraries/{library_id}/tags")
+async def get_library_tags(library_id: str):
+    """Get all unique tags in the library."""
+    library_paths = get_library_paths()
+    
+    # Parse library ID
+    try:
+        if library_id == "library1":
+            library_index = 0
+        elif library_id.startswith("library"):
+            library_index = int(library_id[7:]) - 1
+        else:
+            raise ValueError("Invalid library ID format")
+        
+        if library_index < 0 or library_index >= len(library_paths):
+            raise ValueError("Library index out of range")
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Library {library_id} not found")
+    
+    library_path = library_paths[library_index]
+    
+    try:
+        db_service = get_calibre_db_service(library_path)
+        tags = db_service.get_all_tags()
+        return {"tags": tags}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting tags: {str(e)}")
